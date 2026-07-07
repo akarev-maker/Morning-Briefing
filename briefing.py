@@ -81,54 +81,45 @@ Anything useful for web hacking, HTTP proxies, Burp Suite, or OWASP — tie it t
 the Web Proxies module they're on. Include HackTheBox news/announcements here too.
 
 ## 💼 INTERNSHIP OPPORTUNITIES
-**List EVERY internship posting you are given — do not omit, merge, or shorten
-this list. Missing one is a failure.** Each as its own bullet, linked to the
-posting, with the company, the location (or "Remote"), and a one-line note on the
-role. Massachusetts and remote roles are most relevant — put those first — but
-still include ALL the others below them. If there are none, say so and suggest
-checking again tomorrow.
+DO NOT WRITE THIS SECTION. The complete internship list is generated
+automatically from the raw data and inserted here for you — writing it yourself
+risks dropping a posting. Skip straight from the HTB section to QUICK HITS; the
+internships will be placed between them.
 
 ## 📌 QUICK HITS
 Short one-line bullets for any other notable items that didn't fit above.
 """
 
+# We build the 💼 INTERNSHIP OPPORTUNITIES section in code (not via the model) so
+# that EVERY posting is guaranteed to appear — the model was silently dropping
+# some. This heading must match what we splice against in assemble_briefing().
+INTERNSHIP_HEADING = "## 💼 INTERNSHIP OPPORTUNITIES"
+QUICK_HITS_HEADING = "## 📌 QUICK HITS"
+
 
 # ---------------------------------------------------------------------------
 # Prompt construction
 # ---------------------------------------------------------------------------
-# The free GitHub Models tier caps llama-4-scout at 8000 *input* tokens. We send
-# the model EVERYTHING so nothing — especially an internship — gets dropped before
-# it's even seen, so the caps below are generous. Section ORDER is deliberate and
-# is what makes "keep all internships" safe: the must-keep, low-volume sections
-# (INTERNSHIPS, then KEV) come FIRST, news next, and CVEs LAST because CVEs are
-# the only unbounded section (a busy day brings hundreds). If MAX_PROMPT_CHARS
-# ever has to trim, it trims the tail — CVEs first, then news — and never the
-# internships. MAX_PROMPT_CHARS keeps the whole prompt under the token limit
+# The free GitHub Models tier caps llama-4-scout at 8000 *input* tokens. The
+# internship list is built in code (not sent to the model), so the only sections
+# here are KEV, news, and CVEs. Order is deliberate: KEV first (small, must-keep),
+# news next, CVEs LAST because CVEs are the only unbounded section (a busy day
+# brings hundreds). If MAX_PROMPT_CHARS has to trim, it trims the tail — CVEs
+# first, then news. MAX_PROMPT_CHARS keeps the whole prompt under the token limit
 # (~3.3 chars/token → ~20000 chars ≈ 6100 tokens, with headroom).
 PROMPT_NEWS_CAP = 60
 PROMPT_CVES_CAP = 40
-PROMPT_JOBS_CAP = 200
 MAX_PROMPT_CHARS = 20000
 
 
 def _format_data_for_prompt(data):
+    # NOTE: internships are intentionally NOT included here — that section is
+    # built deterministically in build_internships_markdown() and spliced in
+    # afterward, so the model never has the chance to drop a posting.
     lines = []
 
-    # Internships FIRST — the item the reader most cares about not missing.
-    lines.append("=== INTERNSHIP POSTINGS (curated GitHub internship lists) ===")
-    lines.append("(list EVERY one of these in the briefing — do not drop any)")
-    if data["jobs"]:
-        for j in data["jobs"][:PROMPT_JOBS_CAP]:
-            company = f" @ {j['company']}" if j["company"] else ""
-            lines.append(
-                f"- {j['title']}{company} — {j['location_str']} [{j['term']}]"
-            )
-            if j["link"]:
-                lines.append(f"  link: {j['link']}")
-    else:
-        lines.append("(no active security internships found today)")
-
-    lines.append("\n=== ACTIVELY EXPLOITED (CISA KEV, recently added) ===")
+    # KEV first — small, must-keep, and never trimmed.
+    lines.append("=== ACTIVELY EXPLOITED (CISA KEV, recently added) ===")
     if data.get("kev"):
         for k in data["kev"]:
             ransom = (
@@ -211,6 +202,72 @@ def summarize(data):
     return content.strip()
 
 
+def build_internships_markdown(jobs):
+    """Deterministically render the 💼 section with EVERY posting and its details.
+
+    Built in code rather than by the model so no posting can be dropped. Each
+    entry includes company, all locations, term, category, degrees, and a visa
+    note where relevant.
+    """
+    lines = [INTERNSHIP_HEADING]
+    if not jobs:
+        lines.append(
+            "No active security internships in the tracked lists today — "
+            "check again tomorrow (the next hiring cycle ramps up in the fall)."
+        )
+        return "\n".join(lines)
+
+    lines.append(
+        f"*{len(jobs)} active security internship(s) — Massachusetts and remote "
+        f"roles listed first.*"
+    )
+    lines.append("")
+    for j in jobs:
+        title = f"**[{j['title']}]({j['link']})**" if j.get("link") else f"**{j['title']}**"
+        lead = f"{title} — {j['company']}" if j.get("company") else title
+        lines.append(f"- {lead}")
+
+        # Detail line: location · term · category · degrees.
+        details = [f"📍 {j['location_str']}"]
+        if j.get("term"):
+            details.append(j["term"])
+        if j.get("category"):
+            details.append(j["category"])
+        degrees = j.get("degrees") or []
+        if degrees:
+            details.append("/".join(degrees))
+        lines.append(f"  <br>{' · '.join(details)}")
+
+        # Visa/citizenship flag — matters a lot for internship eligibility.
+        sponsorship = (j.get("sponsorship") or "").lower()
+        if "citizen" in sponsorship or "does not offer" in sponsorship:
+            lines.append(f"  <br>⚠️ {j['sponsorship']}")
+    return "\n".join(lines)
+
+
+def assemble_briefing(ai_markdown, data):
+    """Splice the code-built internship section into the model's briefing.
+
+    Inserted just before QUICK HITS if that heading exists, else appended. Any
+    internship section the model wrote anyway (it was told not to) is stripped
+    first so we never get duplicates.
+    """
+    md = ai_markdown
+
+    # Defensive: remove a stray model-written internship section if present.
+    if INTERNSHIP_HEADING in md:
+        start = md.index(INTERNSHIP_HEADING)
+        after = md.find("\n## ", start + 1)
+        md = md[:start] + (md[after + 1 :] if after != -1 else "")
+
+    internships = build_internships_markdown(data["jobs"])
+
+    if QUICK_HITS_HEADING in md:
+        idx = md.index(QUICK_HITS_HEADING)
+        return md[:idx].rstrip() + "\n\n" + internships + "\n\n" + md[idx:]
+    return md.rstrip() + "\n\n" + internships + "\n"
+
+
 def fallback_markdown(data):
     """Build a plain briefing from raw data when the AI call fails."""
     lines = ["## ⚠️ AI summarization unavailable", "", "Raw fetched data below.", ""]
@@ -233,12 +290,8 @@ def fallback_markdown(data):
     if not data["cves"] and not data.get("kev"):
         lines.append("Nothing fetched today.")
 
-    lines.append("\n## 💼 INTERNSHIP OPPORTUNITIES")
-    for j in data["jobs"]:
-        company = f" @ {j['company']}" if j["company"] else ""
-        lines.append(f"- [{j['title']}{company}]({j['link']}) — {j['location_str']}")
-    if not data["jobs"]:
-        lines.append("No active security internships found today.")
+    lines.append("")
+    lines.append(build_internships_markdown(data["jobs"]))
 
     return "\n".join(lines)
 
@@ -352,7 +405,10 @@ def main():
     data = fetcher.fetch_all()
 
     try:
-        markdown_text = summarize(data)
+        ai_markdown = summarize(data)
+        # Internship section is built in code and spliced in — guarantees every
+        # posting appears regardless of what the model chose to include.
+        markdown_text = assemble_briefing(ai_markdown, data)
     except Exception as exc:  # noqa: BLE001 — still send *something* useful
         logger.error("AI summarization failed (%s); using fallback briefing.", exc)
         markdown_text = fallback_markdown(data)

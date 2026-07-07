@@ -326,7 +326,7 @@ def _location_rank(locations):
     return 2
 
 
-def fetch_jobs(cap=25):
+def fetch_jobs(cap=40):
     """Fetch active cybersecurity internships from curated GitHub listing repos.
 
     Filters to active security-relevant roles, deduplicates across sources, and
@@ -358,6 +358,7 @@ def fetch_jobs(cap=25):
 
             locations = item.get("locations") or []
             terms = item.get("terms") or [label]
+            degrees = item.get("degrees") or []
             jobs.append(
                 {
                     "title": title.strip(),
@@ -366,8 +367,11 @@ def fetch_jobs(cap=25):
                     "locations": locations,
                     "location_str": ", ".join(locations) if locations else "Unspecified",
                     "term": terms[0],
-                    "rank": _location_rank(locations),
+                    "category": (item.get("category") or "").strip(),
+                    "sponsorship": (item.get("sponsorship") or "").strip(),
+                    "degrees": degrees,
                     "date_posted": item.get("date_posted") or 0,
+                    "rank": _location_rank(locations),
                 }
             )
             added += 1
