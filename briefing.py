@@ -108,14 +108,17 @@ def _format_data_for_prompt(data):
     else:
         lines.append("(no CVEs fetched)")
 
-    lines.append("\n=== INTERNSHIP POSTINGS (Indeed RSS) ===")
+    lines.append("\n=== INTERNSHIP POSTINGS (curated GitHub internship lists) ===")
     if data["jobs"]:
         for j in data["jobs"]:
-            lines.append(f"- {j['title']} [{j['query']}]")
+            company = f" @ {j['company']}" if j["company"] else ""
+            lines.append(
+                f"- {j['title']}{company} — {j['location_str']} [{j['term']}]"
+            )
             if j["link"]:
                 lines.append(f"  link: {j['link']}")
     else:
-        lines.append("(no job postings fetched — Indeed RSS may be down)")
+        lines.append("(no active security internships found today)")
 
     return "\n".join(lines)
 
@@ -169,9 +172,10 @@ def fallback_markdown(data):
 
     lines.append("\n## 💼 INTERNSHIP OPPORTUNITIES")
     for j in data["jobs"]:
-        lines.append(f"- [{j['title']}]({j['link']}) — {j['query']}")
+        company = f" @ {j['company']}" if j["company"] else ""
+        lines.append(f"- [{j['title']}{company}]({j['link']}) — {j['location_str']}")
     if not data["jobs"]:
-        lines.append("No postings fetched today.")
+        lines.append("No active security internships found today.")
 
     return "\n".join(lines)
 

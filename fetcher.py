@@ -9,7 +9,6 @@ of crashing the whole run.
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
 
 import feedparser
 import requests
@@ -53,12 +52,39 @@ RSS_FEEDS = {
 
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
-# Indeed RSS is unreliable — see the README for what to do when it breaks.
-INDEED_QUERIES = [
-    ("penetration tester intern", "Massachusetts"),
-    ("penetration tester intern", "Remote"),
-    ("cybersecurity intern", "Massachusetts"),
+# Curated, community-maintained internship lists on GitHub. They publish
+# structured JSON updated daily and are served from raw.githubusercontent.com,
+# so (unlike Indeed RSS) they are never IP-blocked from GitHub Actions runners.
+# We pull from both the current and next Summer cycle so the source stays useful
+# year-round as repos roll over. See the README for swapping these when a new
+# cycle's repo appears.
+INTERNSHIP_SOURCES = [
+    (
+        "Summer 2026",
+        "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/.github/scripts/listings.json",
+    ),
+    (
+        "Summer 2027",
+        "https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/dev/.github/scripts/listings.json",
+    ),
 ]
+
+# A role counts as security-relevant if its title contains any of these.
+SECURITY_KEYWORDS = (
+    "security",
+    "cyber",
+    "penetration",
+    "pentest",
+    "pen test",
+    "red team",
+    "appsec",
+    "infosec",
+    "soc analyst",
+    "malware",
+    "vulnerability",
+    "incident response",
+    "threat",
+)
 
 
 def _entry_datetime(entry):
@@ -220,61 +246,85 @@ def fetch_cves(hours=24, min_cvss=7.0, cap=40):
     return result
 
 
-def _job_key(entry):
-    """Dedup key: normalized title (Indeed titles embed company + role)."""
-    title = entry.get("title", "").strip().lower()
-    return title
+def _is_security_role(title):
+    return any(keyword in title.lower() for keyword in SECURITY_KEYWORDS)
 
 
-def fetch_jobs():
-    """Fetch internship postings from Indeed RSS across all queries, deduplicated."""
+def _location_rank(locations):
+    """0 = Massachusetts, 1 = remote, 2 = everywhere else. Lower sorts first.
+
+    The recipient is MA-based and open to remote, so those surface at the top.
+    """
+    joined = " ".join(locations).lower()
+    if any(city in joined for city in ("massachusetts", "boston", "cambridge")):
+        return 0
+    # Match the ", MA" state code without catching substrings like 'Norman'.
+    for loc in locations:
+        tokens = [t.strip().lower() for t in loc.replace("/", ",").split(",")]
+        if "ma" in tokens:
+            return 0
+    if "remote" in joined:
+        return 1
+    return 2
+
+
+def fetch_jobs(cap=25):
+    """Fetch active cybersecurity internships from curated GitHub listing repos.
+
+    Filters to active security-relevant roles, deduplicates across sources, and
+    sorts so Massachusetts and remote roles surface first (then newest).
+    """
     seen = set()
     jobs = []
 
-    for query, location in INDEED_QUERIES:
-        url = f"https://www.indeed.com/rss?q={quote(query)}&l={quote(location)}"
+    for label, url in INTERNSHIP_SOURCES:
         try:
-            feed = _parse_feed(url)
-            if feed.bozo and not feed.entries:
-                logger.warning(
-                    "Indeed feed for '%s' in '%s' failed: %s",
-                    query,
-                    location,
-                    feed.bozo_exception,
-                )
+            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=40)
+            resp.raise_for_status()
+            listings = resp.json()
+        except Exception as exc:  # noqa: BLE001 — one bad source must not kill the run
+            logger.warning("Error fetching internship source '%s': %s", label, exc)
+            continue
+
+        added = 0
+        for item in listings:
+            if not item.get("active"):
                 continue
+            title = item.get("title", "")
+            if not _is_security_role(title):
+                continue
+            key = item.get("id") or item.get("url")
+            if not key or key in seen:
+                continue
+            seen.add(key)
 
-            added = 0
-            for entry in feed.entries:
-                key = _job_key(entry)
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                jobs.append(
-                    {
-                        "title": entry.get("title", "(untitled)").strip(),
-                        "link": entry.get("link", ""),
-                        "summary": _clean_summary(entry.get("summary", ""), limit=250),
-                        "query": f"{query} — {location}",
-                    }
-                )
-                added += 1
-            logger.info(
-                "Fetched %d job(s) for '%s' in '%s'", added, query, location
+            locations = item.get("locations") or []
+            terms = item.get("terms") or [label]
+            jobs.append(
+                {
+                    "title": title.strip(),
+                    "company": (item.get("company_name") or "").strip(),
+                    "link": item.get("url", ""),
+                    "locations": locations,
+                    "location_str": ", ".join(locations) if locations else "Unspecified",
+                    "term": terms[0],
+                    "rank": _location_rank(locations),
+                    "date_posted": item.get("date_posted") or 0,
+                }
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Error fetching Indeed feed for '%s' in '%s': %s",
-                query,
-                location,
-                exc,
-            )
+            added += 1
+        logger.info("Fetched %d active security internship(s) from %s", added, label)
 
-    if not jobs:
+    # Massachusetts first, then remote, then the rest; newest within each group.
+    jobs.sort(key=lambda j: (j["rank"], -j["date_posted"]))
+    result = jobs[:cap]
+
+    if not result:
         logger.warning(
-            "No jobs fetched — Indeed RSS may be down/blocked. See README for alternatives."
+            "No active security internships found in curated sources today. "
+            "See README for swapping in a newer cycle's repo."
         )
-    return jobs
+    return result
 
 
 def fetch_all():
