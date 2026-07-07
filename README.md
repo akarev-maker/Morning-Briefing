@@ -1,10 +1,12 @@
 # 🔐 Morning Cyber Briefing
 
+![Tests](https://github.com/akarev-maker/Morning-Briefing/actions/workflows/tests.yml/badge.svg)
+
 An automated morning cybersecurity briefing. Every day at **7:00 AM Eastern**,
-GitHub Actions fetches the latest security news, fresh CVEs, and internship
-postings, has an AI model summarize everything for a UMass Amherst cybersecurity
-student on the HackTheBox Web Hacking path, and emails it to you. No manual
-interaction, and your computer doesn't need to be on.
+GitHub Actions fetches the latest security news, fresh CVEs, internship postings,
+CTFs, and your HackTheBox progress, has an AI model summarize everything for a
+UMass Amherst cybersecurity student on the HackTheBox Web Hacking path, and emails
+it to you. No manual interaction, and your computer doesn't need to be on.
 
 ## What it does
 
@@ -12,12 +14,26 @@ interaction, and your computer doesn't need to be on.
   Computer, Dark Reading), the NVD CVE API (last 24h, prioritizing CVSS 7.0+),
   CISA's Known Exploited Vulnerabilities (KEV) catalog for actively-exploited
   CVEs, and curated GitHub internship lists for security internships.
+- **Enriches** each CVE with whether a **public proof-of-concept exploit** exists
+  (via the community PoC-in-GitHub index) — the same triage a pentester does.
+- **Flags brand-new internships** since yesterday (🆕) so you apply first, where
+  it matters most.
+- **Adds skill-building context**: matching **PortSwigger Web Security Academy**
+  labs for today's vulnerabilities, upcoming **CTF competitions** (CTFtime), and —
+  optionally — your live **HackTheBox** rank/points/owns.
 - **Summarizes** it all with the `Llama-4-Scout-17B-16E-Instruct` model via the
   **GitHub Models API** (free with GitHub Copilot / Student), tailored to your
   studies and job search.
 - **Emails** a dark-themed HTML briefing (with a plain-text fallback) via Gmail.
+  The internship / HTB / CTF / skill sections are built **deterministically in
+  code**, so the AI can never drop an item — it only writes the narrative parts.
 - **Fails gracefully** — a single broken feed logs a warning and is skipped; if
-  the AI call fails you still get a briefing built from the raw data.
+  the AI call fails you still get a complete briefing built from the raw data.
+
+Email sections: 🔥 Top Stories · 🚨 CVEs to Know (with 🔴 actively-exploited and
+🧪 PoC flags) · 🎯 Relevant to Your HTB Path · 🏆 Your HackTheBox Progress ·
+📚 Skill Builder · 🎓 Upcoming CTFs · 💼 Internship Opportunities (🆕 new-flagged) ·
+📌 Quick Hits.
 
 ## Project structure
 
@@ -90,6 +106,27 @@ address).
 
    Names must match **exactly** — the workflow reads them by name.
 
+### 3b. Optional integrations
+
+These add sections to the briefing. Leave them out and those sections are simply
+skipped — everything else still works.
+
+**🏆 HackTheBox progress** — shows your live rank, points, and machine owns.
+
+1. Log in to HackTheBox → **Profile Settings → App Tokens → Create App Token**.
+   Copy it.
+2. Find your numeric user ID: open your HTB profile; the URL ends in
+   `/users/<ID>` — that number is your `HTB_USER_ID`.
+3. Add two secrets: `HTB_TOKEN` (the app token) and `HTB_USER_ID` (the number).
+
+**💼 Federal / MA cyber internships via USAJOBS** — surfaces DoD, national-lab,
+and other federal internships the GitHub lists miss.
+
+1. Register for a free API key: <https://developer.usajobs.gov/apirequest/> (you
+   provide an email; they email you a key).
+2. Add two secrets: `USAJOBS_API_KEY` (the key) and `USAJOBS_EMAIL` (the email you
+   registered with — USAJOBS requires it as the `User-Agent`).
+
 ### 4. Test it manually
 
 You don't have to wait until 7 AM.
@@ -131,6 +168,28 @@ To change the time, edit the `cron` line in `.github/workflows/morning.yml`.
 [crontab.guru](https://crontab.guru) helps build the expression.
 
 ---
+
+## Security & making the repo public
+
+This repo is safe to make public — that's how it works best as a portfolio piece.
+
+- **No secrets are in the code.** Everything sensitive (tokens, the Gmail App
+  Password, your email) is read from environment variables populated by GitHub
+  **Secrets**, which are encrypted and never exposed in logs or to forks.
+- `.gitignore` blocks `.env` so a local secrets file can't be committed by
+  accident. Never hardcode a credential — always add it as a Secret.
+- If you ever paste a token somewhere by mistake, **rotate it** (regenerate the
+  GitHub token / Gmail App Password) — git history is forever on a public repo.
+- The workflow needs `contents: write` permission (declared in `morning.yml`)
+  only to commit the `state/seen_jobs.json` file that powers 🆕 new-internship
+  detection. It pushes with the built-in `GITHUB_TOKEN` — no extra secret.
+
+## Development
+
+- **Tests:** `pip install pytest && pytest` — network-free unit tests cover the
+  "never drop an internship" guarantee, new-job flagging, section assembly, and
+  relevance filters. They also run in CI on every push (the badge up top).
+- **Inspect fetched data without emailing:** `python fetcher.py`.
 
 ## Troubleshooting
 

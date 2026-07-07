@@ -15,11 +15,12 @@ import os
 import smtplib
 import ssl
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import markdown as md
+from dateutil import parser as dateparser
 from openai import OpenAI
 
 import fetcher
@@ -74,17 +75,19 @@ Include every CVSS 7.0+ or web-security-relevant CVE you are given. For each:
 description and, where it applies, why it's relevant to web hacking. **Lead with
 any CVEs from the CISA KEV list — those are confirmed actively exploited in the
 wild — and mark them `🔴 Actively exploited` (note if there's known ransomware
-use).**
+use).** If a CVE line says a public PoC exists, add `🧪 PoC available` and keep
+the PoC link — knowing what's weaponized is exactly how a pentester triages.
 
 ## 🎯 RELEVANT TO YOUR HTB PATH
 Anything useful for web hacking, HTTP proxies, Burp Suite, or OWASP — tie it to
 the Web Proxies module they're on. Include HackTheBox news/announcements here too.
 
-## 💼 INTERNSHIP OPPORTUNITIES
-DO NOT WRITE THIS SECTION. The complete internship list is generated
-automatically from the raw data and inserted here for you — writing it yourself
-risks dropping a posting. Skip straight from the HTB section to QUICK HITS; the
-internships will be placed between them.
+DO NOT WRITE any of these sections — they are generated automatically from live
+data and inserted for you, and writing them yourself risks dropping or garbling
+entries: `## 🏆 YOUR HACKTHEBOX PROGRESS`, `## 📚 SKILL BUILDER`,
+`## 🎓 UPCOMING CTFs`, `## 💼 INTERNSHIP OPPORTUNITIES`. After the HTB PATH
+section, skip straight to QUICK HITS; everything above will be inserted between
+them.
 
 ## 📌 QUICK HITS
 Short one-line bullets for any other notable items that didn't fit above.
@@ -112,6 +115,14 @@ PROMPT_CVES_CAP = 40
 MAX_PROMPT_CHARS = 20000
 
 
+def _poc_note(pocs):
+    """Short ' [PoC: url]' note for the prompt when a public exploit exists."""
+    if not pocs:
+        return ""
+    top = pocs[0]
+    return f" [🧪 public PoC exists: {top['url']}]"
+
+
 def _format_data_for_prompt(data):
     # NOTE: internships are intentionally NOT included here — that section is
     # built deterministically in build_internships_markdown() and spliced in
@@ -127,9 +138,10 @@ def _format_data_for_prompt(data):
                 if str(k.get("ransomware", "")).lower() == "known"
                 else ""
             )
+            poc = _poc_note(k.get("pocs"))
             lines.append(
                 f"- {k['id']} — {k['vendor']} {k['product']}: {k['name']}"
-                f" (added {k['date_added']}){ransom} {k['link']}"
+                f" (added {k['date_added']}){ransom}{poc} {k['link']}"
             )
             if k["description"]:
                 lines.append(f"  {k['description'][:220]}")
@@ -152,7 +164,8 @@ def _format_data_for_prompt(data):
     if data["cves"]:
         for c in data["cves"][:PROMPT_CVES_CAP]:
             score = f"{c['score']:.1f}" if c["score"] else "N/A"
-            lines.append(f"- {c['id']} (CVSS {score} {c['severity']}) {c['link']}")
+            poc = _poc_note(c.get("pocs"))
+            lines.append(f"- {c['id']} (CVSS {score} {c['severity']}){poc} {c['link']}")
             if c["description"]:
                 lines.append(f"  {c['description'][:220]}")
     else:
@@ -218,14 +231,19 @@ def build_internships_markdown(jobs):
         )
         return "\n".join(lines)
 
-    lines.append(
-        f"*{len(jobs)} active security internship(s) — Massachusetts and remote "
-        f"roles listed first.*"
-    )
+    new_count = sum(1 for j in jobs if j.get("is_new"))
+    summary = f"*{len(jobs)} active security internship(s) — Massachusetts and remote first."
+    if new_count:
+        summary += f" **🆕 {new_count} new since yesterday (apply to these first).**"
+    lines.append(summary + "*")
     lines.append("")
-    for j in jobs:
+
+    # New postings first within the already MA/remote-sorted list.
+    ordered = sorted(jobs, key=lambda j: not j.get("is_new"))
+    for j in ordered:
+        flag = "🆕 " if j.get("is_new") else ""
         title = f"**[{j['title']}]({j['link']})**" if j.get("link") else f"**{j['title']}**"
-        lead = f"{title} — {j['company']}" if j.get("company") else title
+        lead = f"{flag}{title} — {j['company']}" if j.get("company") else f"{flag}{title}"
         lines.append(f"- {lead}")
 
         # Detail line: location · term · category · degrees.
@@ -246,27 +264,170 @@ def build_internships_markdown(jobs):
     return "\n".join(lines)
 
 
-def assemble_briefing(ai_markdown, data):
-    """Splice the code-built internship section into the model's briefing.
+# --- PortSwigger Web Security Academy: the go-to free labs for web pentesting ---
+# Each topic maps trigger keywords (matched against today's CVEs/news) to its
+# free Academy lab. Ordered roughly by how central it is to the Web Hacking path.
+PORTSWIGGER_TOPICS = [
+    ("SQL injection", "https://portswigger.net/web-security/sql-injection",
+     ["sql injection", "sqli"]),
+    ("Cross-site scripting (XSS)", "https://portswigger.net/web-security/cross-site-scripting",
+     ["cross-site scripting", "xss"]),
+    ("Server-side request forgery (SSRF)", "https://portswigger.net/web-security/ssrf",
+     ["ssrf", "server-side request forgery"]),
+    ("OS command injection", "https://portswigger.net/web-security/os-command-injection",
+     ["command injection", "os command"]),
+    ("Path traversal", "https://portswigger.net/web-security/file-path-traversal",
+     ["path traversal", "directory traversal"]),
+    ("File upload vulnerabilities", "https://portswigger.net/web-security/file-upload",
+     ["file upload", "unrestricted upload", "arbitrary file"]),
+    ("Access control & IDOR", "https://portswigger.net/web-security/access-control",
+     ["access control", "idor", "authorization bypass", "privilege escalation"]),
+    ("Authentication", "https://portswigger.net/web-security/authentication",
+     ["authentication bypass", "auth bypass", "improper authentication"]),
+    ("XML external entity (XXE)", "https://portswigger.net/web-security/xxe",
+     ["xxe", "xml external entity"]),
+    ("Insecure deserialization", "https://portswigger.net/web-security/deserialization",
+     ["deserialization", "deserialisation"]),
+    ("Server-side template injection", "https://portswigger.net/web-security/server-side-template-injection",
+     ["template injection", "ssti"]),
+    ("JWT attacks", "https://portswigger.net/web-security/jwt", ["jwt", "json web token"]),
+    ("CSRF", "https://portswigger.net/web-security/csrf", ["csrf", "cross-site request forgery"]),
+    ("HTTP request smuggling", "https://portswigger.net/web-security/request-smuggling",
+     ["request smuggling"]),
+    ("Web cache poisoning", "https://portswigger.net/web-security/web-cache-poisoning",
+     ["cache poisoning", "cache deception"]),
+    ("Business logic / prototype pollution", "https://portswigger.net/web-security/prototype-pollution",
+     ["prototype pollution"]),
+    ("GraphQL API vulnerabilities", "https://portswigger.net/web-security/graphql",
+     ["graphql"]),
+    ("OAuth authentication", "https://portswigger.net/web-security/oauth", ["oauth"]),
+    ("CORS", "https://portswigger.net/web-security/cors", ["cors", "cross-origin"]),
+    ("NoSQL injection", "https://portswigger.net/web-security/nosql-injection", ["nosql"]),
+]
 
-    Inserted just before QUICK HITS if that heading exists, else appended. Any
-    internship section the model wrote anyway (it was told not to) is stripped
-    first so we never get duplicates.
+# Always shown — tied to the recipient's current Web Proxies / Burp Suite module.
+PINNED_LEARNING = [
+    ("Burp Suite: get started", "https://portswigger.net/burp/documentation/desktop/getting-started"),
+    ("PortSwigger: intercepting HTTP requests with Burp Proxy",
+     "https://portswigger.net/burp/documentation/desktop/tools/proxy"),
+    ("All Web Security Academy topics", "https://portswigger.net/web-security/all-topics"),
+]
+
+
+def build_skillbuilder_markdown(data):
+    """Deterministic 📚 section: PortSwigger labs matching today's web vulns, plus
+    pinned Burp/Web-Proxies resources for the recipient's current HTB module."""
+    haystack = " ".join(
+        [c.get("description", "") for c in data.get("cves", [])]
+        + [f"{k.get('name','')} {k.get('description','')}" for k in data.get("kev", [])]
+        + [n.get("title", "") for n in data.get("news", [])]
+    ).lower()
+
+    matched = [
+        (name, url)
+        for name, url, keywords in PORTSWIGGER_TOPICS
+        if any(kw in haystack for kw in keywords)
+    ]
+
+    lines = ["## 📚 SKILL BUILDER — PortSwigger Web Security Academy"]
+    lines.append(
+        "*Free hands-on labs. Pinned to your current Burp Suite / Web Proxies "
+        "module, plus topics tied to today's vulnerabilities.*"
+    )
+    lines.append("")
+    lines.append("**Your current module:**")
+    for name, url in PINNED_LEARNING:
+        lines.append(f"- [{name}]({url})")
+    if matched:
+        lines.append("")
+        lines.append("**Relevant to today's CVEs/news:**")
+        for name, url in matched:
+            lines.append(f"- [{name}]({url})")
+    return "\n".join(lines)
+
+
+def build_ctf_markdown(events):
+    """Deterministic 🎓 section: upcoming CTF competitions from CTFtime."""
+    lines = ["## 🎓 UPCOMING CTFs"]
+    if not events:
+        lines.append("No upcoming events found (or CTFtime was unreachable).")
+        return "\n".join(lines)
+    lines.append("*Great practice and résumé fodder for security roles.*")
+    lines.append("")
+    now = datetime.now(timezone.utc)
+    for e in events:
+        when, rel = e["start"][:10], ""
+        try:
+            start = dateparser.parse(e["start"])
+            days = (start - now).days
+            rel = " (today)" if days == 0 else f" (in {days}d)" if days > 0 else ""
+            when = start.strftime("%a %b %d")
+        except (ValueError, TypeError):
+            pass
+        place = "🌐 Online" if not e.get("onsite") else f"📍 {e.get('location', 'On-site')}"
+        fmt = f" · {e['format']}" if e.get("format") else ""
+        title = f"**[{e['title']}]({e['url']})**" if e.get("url") else f"**{e['title']}**"
+        lines.append(f"- {title} — {when}{rel} · {place}{fmt}")
+    return "\n".join(lines)
+
+
+def build_htb_markdown(htb):
+    """Deterministic 🏆 section: the recipient's HackTheBox stats (if available)."""
+    if not htb:
+        return ""
+    lines = ["## 🏆 YOUR HACKTHEBOX PROGRESS"]
+    name = htb.get("name") or "You"
+    rank = htb.get("rank") or "—"
+    lines.append(f"**{name}** · Rank: **{rank}**")
+    stats = []
+    if htb.get("points"):
+        stats.append(f"{htb['points']} pts")
+    if htb.get("ranking"):
+        stats.append(f"global #{htb['ranking']}")
+    if htb.get("user_owns"):
+        stats.append(f"{htb['user_owns']} user owns")
+    if htb.get("system_owns"):
+        stats.append(f"{htb['system_owns']} system owns")
+    if htb.get("respects"):
+        stats.append(f"{htb['respects']} respects")
+    if stats:
+        lines.append(f"  <br>{' · '.join(stats)}")
+    lines.append(
+        "  <br>*Keep the streak going — one Web Proxies lab a day compounds fast.*"
+    )
+    return "\n".join(lines)
+
+
+def assemble_briefing(ai_markdown, data):
+    """Splice all code-built sections into the model's briefing.
+
+    The model writes only the narrative sections (Top Stories, CVEs, HTB Path,
+    Quick Hits). Everything that must be complete/accurate — HTB progress, skill
+    labs, CTFs, and the full internship list — is built here and inserted just
+    before QUICK HITS, so the model can never drop or garble it.
     """
     md = ai_markdown
 
-    # Defensive: remove a stray model-written internship section if present.
-    if INTERNSHIP_HEADING in md:
-        start = md.index(INTERNSHIP_HEADING)
-        after = md.find("\n## ", start + 1)
-        md = md[:start] + (md[after + 1 :] if after != -1 else "")
+    # Defensive: strip any of our sections the model wrote anyway (avoid dupes).
+    for heading in (INTERNSHIP_HEADING, "## 🏆", "## 📚", "## 🎓"):
+        while heading in md:
+            start = md.index(heading)
+            after = md.find("\n## ", start + 1)
+            md = md[:start] + (md[after + 1 :] if after != -1 else "")
 
-    internships = build_internships_markdown(data["jobs"])
+    # Order: personal progress, then learning, then opportunities.
+    sections = [
+        build_htb_markdown(data.get("htb")),
+        build_skillbuilder_markdown(data),
+        build_ctf_markdown(data.get("ctf", [])),
+        build_internships_markdown(data["jobs"]),
+    ]
+    block = "\n\n".join(s for s in sections if s)
 
     if QUICK_HITS_HEADING in md:
         idx = md.index(QUICK_HITS_HEADING)
-        return md[:idx].rstrip() + "\n\n" + internships + "\n\n" + md[idx:]
-    return md.rstrip() + "\n\n" + internships + "\n"
+        return md[:idx].rstrip() + "\n\n" + block + "\n\n" + md[idx:]
+    return md.rstrip() + "\n\n" + block + "\n"
 
 
 def fallback_markdown(data):
@@ -281,18 +442,30 @@ def fallback_markdown(data):
 
     lines.append("\n## 🚨 CVEs TO KNOW")
     for k in data.get("kev", []):
+        poc = " · 🧪 PoC" if k.get("pocs") else ""
         lines.append(
             f"- 🔴 **[{k['id']}]({k['link']})** actively exploited — "
-            f"{k['vendor']} {k['product']}: {k['name']}"
+            f"{k['vendor']} {k['product']}: {k['name']}{poc}"
         )
     for c in data["cves"][:20]:
         score = f"{c['score']:.1f}" if c["score"] else "N/A"
-        lines.append(f"- **[{c['id']}]({c['link']})** (CVSS {score} {c['severity']})")
+        poc = " · 🧪 PoC" if c.get("pocs") else ""
+        lines.append(
+            f"- **[{c['id']}]({c['link']})** (CVSS {score} {c['severity']}){poc}"
+        )
     if not data["cves"] and not data.get("kev"):
         lines.append("Nothing fetched today.")
 
-    lines.append("")
-    lines.append(build_internships_markdown(data["jobs"]))
+    # Reuse the same deterministic builders so the fallback is just as complete.
+    for section in (
+        build_htb_markdown(data.get("htb")),
+        build_skillbuilder_markdown(data),
+        build_ctf_markdown(data.get("ctf", [])),
+        build_internships_markdown(data["jobs"]),
+    ):
+        if section:
+            lines.append("")
+            lines.append(section)
 
     return "\n".join(lines)
 
@@ -318,7 +491,7 @@ HTML_TEMPLATE = """\
     <div style="border-top:1px solid #21262d;margin-top:28px;padding-top:14px;
                 font-size:11px;color:#6e7681;">
       Auto-generated by your Morning Briefing bot · GitHub Actions + GitHub Models
-      · {news} news / {cves} CVEs / {jobs} jobs fetched
+      · {news} news / {cves} CVEs / {kev} KEV / {jobs} internships / {ctf} CTFs
     </div>
   </div>
 </div>
@@ -353,7 +526,9 @@ def render_html(markdown_text, data, date_str):
         body=body_html,
         news=len(data["news"]),
         cves=len(data["cves"]),
+        kev=len(data.get("kev", [])),
         jobs=len(data["jobs"]),
+        ctf=len(data.get("ctf", [])),
     )
     return EMAIL_STYLES + inner
 

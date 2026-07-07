@@ -6,7 +6,9 @@ hiccup, Indeed rate-limiting) logs a warning and returns whatever it can instead
 of crashing the whole run.
 """
 
+import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -59,6 +61,32 @@ KEV_URL = (
     "https://www.cisa.gov/sites/default/files/feeds/"
     "known_exploited_vulnerabilities.json"
 )
+
+# Upcoming CTF competitions (great for skill-building + résumé). Public JSON API.
+CTFTIME_URL = "https://ctftime.org/api/v1/events/"
+
+# Community index mapping CVEs -> public proof-of-concept exploit repos on GitHub.
+# Per-CVE JSON at /{year}/{CVE-ID}.json (200 with repo list, 404 if none). Lets us
+# flag which CVEs are actually weaponized — exactly how a pentester triages.
+POC_BASE = "https://raw.githubusercontent.com/nomi-sec/PoC-in-GitHub/master"
+
+# HackTheBox API (needs a personal App Token — optional; skipped if unset).
+HTB_API = "https://labs.hackthebox.com/api/v4"
+
+# USAJOBS federal job search (needs a free API key — optional; skipped if unset).
+# This is where MA-area federal/defense cyber internships live (Lincoln Lab,
+# national labs, DoD, etc.).
+USAJOBS_URL = "https://data.usajobs.gov/api/search"
+USAJOBS_QUERIES = [
+    ("penetration tester intern", None),
+    ("cybersecurity intern", "Massachusetts"),
+    ("cyber intern", None),
+]
+
+# Where we remember which internships we've already seen, so we can flag the ones
+# that are brand-new since yesterday. Committed back to the repo by the workflow.
+STATE_DIR = "state"
+SEEN_JOBS_PATH = os.path.join(STATE_DIR, "seen_jobs.json")
 
 # Curated, community-maintained internship lists on GitHub. They publish
 # structured JSON updated daily and are served from raw.githubusercontent.com,
@@ -389,28 +417,301 @@ def fetch_jobs(cap=40):
     return result
 
 
+def _normalize_usajobs_item(descriptor):
+    locations = [
+        loc.get("LocationName", "")
+        for loc in descriptor.get("PositionLocation", [])
+        if loc.get("LocationName")
+    ]
+    date_posted = 0
+    start = descriptor.get("PublicationStartDate", "")
+    if start:
+        try:
+            date_posted = int(dateparser.parse(start).timestamp())
+        except (ValueError, TypeError, OverflowError):
+            date_posted = 0
+    return {
+        "title": descriptor.get("PositionTitle", "").strip(),
+        "company": (descriptor.get("OrganizationName") or "").strip(),
+        "link": descriptor.get("PositionURI", ""),
+        "locations": locations,
+        "location_str": ", ".join(locations) if locations else "Unspecified",
+        "term": "Federal",
+        "category": "Government / Federal",
+        "sponsorship": "U.S. Citizenship typically required",
+        "degrees": [],
+        "date_posted": date_posted,
+        "rank": _location_rank(locations),
+        "source": "USAJOBS",
+    }
+
+
+def fetch_usajobs():
+    """Fetch federal cyber internships from USAJOBS (optional; needs a free key).
+
+    Skipped silently if USAJOBS_API_KEY / USAJOBS_EMAIL aren't set. This surfaces
+    the MA-area federal/defense internships the GitHub lists miss.
+    """
+    key = os.environ.get("USAJOBS_API_KEY")
+    email = os.environ.get("USAJOBS_EMAIL")
+    if not key or not email:
+        logger.info("USAJOBS_API_KEY/USAJOBS_EMAIL not set — skipping USAJOBS.")
+        return []
+
+    headers = {"Host": "data.usajobs.gov", "User-Agent": email, "Authorization-Key": key}
+    jobs, seen = [], set()
+    for keyword, location in USAJOBS_QUERIES:
+        params = {"Keyword": keyword, "ResultsPerPage": 25}
+        if location:
+            params["LocationName"] = location
+        try:
+            resp = requests.get(USAJOBS_URL, params=params, headers=headers, timeout=30)
+            resp.raise_for_status()
+            items = resp.json().get("SearchResult", {}).get("SearchResultItems", [])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Error fetching USAJOBS for '%s': %s", keyword, exc)
+            continue
+
+        added = 0
+        for item in items:
+            descriptor = item.get("MatchedObjectDescriptor", {})
+            title = descriptor.get("PositionTitle", "")
+            # Keep only genuine internships.
+            if "intern" not in title.lower():
+                continue
+            uid = descriptor.get("PositionID") or descriptor.get("PositionURI", "")
+            if not uid or uid in seen:
+                continue
+            seen.add(uid)
+            jobs.append(_normalize_usajobs_item(descriptor))
+            added += 1
+        logger.info("Fetched %d USAJOBS intern posting(s) for '%s'", added, keyword)
+
+    return jobs
+
+
+def fetch_ctf_events(limit=8, weeks_ahead=3):
+    """Fetch upcoming CTF competitions from CTFtime (public API, no key)."""
+    now = datetime.now(timezone.utc)
+    params = {
+        "limit": 100,
+        "start": int(now.timestamp()),
+        "finish": int((now + timedelta(weeks=weeks_ahead)).timestamp()),
+    }
+    try:
+        resp = requests.get(
+            CTFTIME_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=30
+        )
+        resp.raise_for_status()
+        events = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Error fetching CTFtime events: %s", exc)
+        return []
+
+    parsed = []
+    for e in events:
+        parsed.append(
+            {
+                "title": e.get("title", ""),
+                "start": e.get("start", ""),
+                "finish": e.get("finish", ""),
+                "url": e.get("url") or e.get("ctftime_url", ""),
+                "format": e.get("format", ""),
+                "onsite": bool(e.get("onsite", False)),
+                "location": e.get("location", "")
+                or ("On-site" if e.get("onsite") else "Online"),
+                "weight": e.get("weight", 0) or 0,
+            }
+        )
+    parsed.sort(key=lambda x: x["start"])
+    result = parsed[:limit]
+    logger.info("Fetched %d upcoming CTF event(s)", len(result))
+    return result
+
+
+def fetch_htb_profile():
+    """Fetch the recipient's HackTheBox stats (optional; needs an App Token).
+
+    Skipped silently if HTB_TOKEN / HTB_USER_ID aren't set. Parsed defensively so
+    an unexpected response shape degrades to whatever fields are present.
+    """
+    token = os.environ.get("HTB_TOKEN")
+    user_id = os.environ.get("HTB_USER_ID")
+    if not token or not user_id:
+        logger.info("HTB_TOKEN/HTB_USER_ID not set — skipping HTB profile.")
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+    }
+    try:
+        resp = requests.get(
+            f"{HTB_API}/user/profile/basic/{user_id}", headers=headers, timeout=30
+        )
+        resp.raise_for_status()
+        profile = resp.json().get("profile", {}) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Error fetching HTB profile: %s", exc)
+        return None
+
+    team = profile.get("team")
+    result = {
+        "name": profile.get("name", ""),
+        "rank": profile.get("rank", ""),
+        "points": profile.get("points", 0),
+        "ranking": profile.get("ranking", ""),
+        "user_owns": profile.get("user_owns", 0),
+        "system_owns": profile.get("system_owns", 0),
+        "respects": profile.get("respects", 0),
+        "country": profile.get("country_name", ""),
+        "team": team.get("name", "") if isinstance(team, dict) else "",
+    }
+    logger.info(
+        "Fetched HTB profile for %s (rank %s, %s pts)",
+        result["name"] or user_id,
+        result["rank"] or "?",
+        result["points"],
+    )
+    return result
+
+
+def _pocs_for_cve(cve_id, session):
+    """Return up to 3 public PoC repos (most-starred first) for a CVE, or []."""
+    parts = cve_id.split("-")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return []
+    url = f"{POC_BASE}/{parts[1]}/{cve_id}.json"
+    try:
+        resp = session.get(url, timeout=15)
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        repos = resp.json()
+    except Exception:  # noqa: BLE001 — best-effort enrichment
+        return []
+    repos = sorted(repos, key=lambda r: r.get("stargazers_count", 0), reverse=True)
+    return [
+        {
+            "url": r.get("html_url", ""),
+            "stars": r.get("stargazers_count", 0),
+            "desc": (r.get("description") or "")[:120],
+        }
+        for r in repos[:3]
+        if r.get("html_url")
+    ]
+
+
+def enrich_with_pocs(items, max_lookups=20):
+    """Attach a 'pocs' list to each CVE/KEV item (best-effort, capped lookups)."""
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    for i, item in enumerate(items):
+        cve_id = item.get("id", "")
+        if i < max_lookups and cve_id.startswith("CVE-"):
+            item["pocs"] = _pocs_for_cve(cve_id, session)
+        else:
+            item["pocs"] = []
+    with_poc = sum(1 for it in items if it.get("pocs"))
+    logger.info(
+        "PoC enrichment: %d of %d checked item(s) have public exploits",
+        with_poc,
+        min(len(items), max_lookups),
+    )
+    return items
+
+
+def load_seen_jobs(path=SEEN_JOBS_PATH):
+    """Load the set of internship IDs seen on previous runs."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return set(json.load(f))
+    except (FileNotFoundError, ValueError, OSError):
+        return set()
+
+
+def save_seen_jobs(jobs, path=SEEN_JOBS_PATH):
+    """Persist the current internship IDs for next run's new-vs-seen diff."""
+    ids = sorted({_job_id(j) for j in jobs if _job_id(j)})
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(ids, f, indent=0)
+    except OSError as exc:
+        logger.warning("Could not save job state to %s: %s", path, exc)
+
+
+def _job_id(job):
+    return job.get("link") or job.get("title", "")
+
+
+def flag_new_jobs(jobs, seen):
+    """Mark each job `is_new` if unseen. First ever run (no state) = no 'new'."""
+    first_run = not seen
+    new_count = 0
+    for job in jobs:
+        job["is_new"] = (not first_run) and (_job_id(job) not in seen)
+        if job["is_new"]:
+            new_count += 1
+    if first_run:
+        logger.info("First run — establishing internship baseline (nothing marked new)")
+    else:
+        logger.info("%d internship(s) are new since the last run", new_count)
+    return jobs
+
+
+def _merge_jobs(*job_lists, cap=50):
+    """Combine job sources, dedup by ID, re-sort MA/remote-first then newest."""
+    merged, seen = [], set()
+    for jobs in job_lists:
+        for job in jobs:
+            jid = _job_id(job)
+            if not jid or jid in seen:
+                continue
+            seen.add(jid)
+            merged.append(job)
+    merged.sort(key=lambda j: (j["rank"], -j.get("date_posted", 0)))
+    return merged[:cap]
+
+
 def fetch_all():
     """Fetch everything, returning a single dict. Never raises."""
     logger.info("Starting data fetch…")
+
+    cves = fetch_cves()
+    kev = fetch_kev()
+    # Flag which CVEs/KEV entries have public exploits (KEV first — highest value).
+    enrich_with_pocs(kev)
+    enrich_with_pocs(cves, max_lookups=15)
+
+    jobs = _merge_jobs(fetch_jobs(), fetch_usajobs())
+    # New-since-last-run diff for internships.
+    seen = load_seen_jobs()
+    flag_new_jobs(jobs, seen)
+    save_seen_jobs(jobs)
+
     data = {
         "news": fetch_rss_feeds(),
-        "cves": fetch_cves(),
-        "kev": fetch_kev(),
-        "jobs": fetch_jobs(),
+        "cves": cves,
+        "kev": kev,
+        "jobs": jobs,
+        "ctf": fetch_ctf_events(),
+        "htb": fetch_htb_profile(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     logger.info(
-        "Fetch complete: %d news, %d cves, %d kev, %d jobs",
+        "Fetch complete: %d news, %d cves, %d kev, %d jobs, %d ctf, htb=%s",
         len(data["news"]),
         len(data["cves"]),
         len(data["kev"]),
         len(data["jobs"]),
+        len(data["ctf"]),
+        "yes" if data["htb"] else "no",
     )
     return data
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    import json
-
     print(json.dumps(fetch_all(), indent=2)[:5000])
