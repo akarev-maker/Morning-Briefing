@@ -161,8 +161,9 @@ def _format_data_for_prompt(data):
     block = "\n".join(lines)
     if len(block) > MAX_PROMPT_CHARS:
         logger.warning(
-            "Prompt data %d chars — trimming the tail (CVEs/news) to %d to fit the "
-            "token limit; internships and KEV are first so they are never trimmed",
+            "Prompt data %d chars — trimming trailing CVEs to %d to fit the token "
+            "limit; KEV and news come first and are kept (internships are built "
+            "separately in code and unaffected)",
             len(block),
             MAX_PROMPT_CHARS,
         )
