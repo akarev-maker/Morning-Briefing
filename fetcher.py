@@ -46,11 +46,19 @@ RSS_FEEDS = {
     "Krebs on Security": "https://krebsonsecurity.com/feed/",
     "The Hacker News": "https://feeds.feedburner.com/TheHackersNews",
     "Bleeping Computer": "https://www.bleepingcomputer.com/feed/",
-    "CISA Alerts": "https://www.cisa.gov/cybersecurity-advisories/all.xml",
     "Dark Reading": "https://www.darkreading.com/rss.xml",
 }
 
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+
+# CISA's advisory RSS is IP-blocked (403) from GitHub Actions runners. We instead
+# use CISA's Known Exploited Vulnerabilities (KEV) catalog — plain JSON, never
+# blocked, and arguably more actionable: every entry is confirmed exploited in
+# the wild, so it matters regardless of CVSS score.
+KEV_URL = (
+    "https://www.cisa.gov/sites/default/files/feeds/"
+    "known_exploited_vulnerabilities.json"
+)
 
 # Curated, community-maintained internship lists on GitHub. They publish
 # structured JSON updated daily and are served from raw.githubusercontent.com,
@@ -246,6 +254,56 @@ def fetch_cves(hours=24, min_cvss=7.0, cap=40):
     return result
 
 
+def fetch_kev(days=7, cap=15):
+    """Fetch CVEs recently added to CISA's Known Exploited Vulnerabilities catalog.
+
+    These are confirmed actively exploited in the wild — high priority regardless
+    of CVSS. CISA adds them in irregular batches, so we use a `days`-wide window
+    (not just 24h) to keep the section meaningful, newest first.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+    try:
+        resp = requests.get(KEV_URL, headers={"User-Agent": USER_AGENT}, timeout=40)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Error fetching CISA KEV feed: %s", exc)
+        return []
+
+    recent = []
+    for vuln in payload.get("vulnerabilities", []):
+        date_str = vuln.get("dateAdded", "")
+        try:
+            added = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if added < cutoff:
+            continue
+        cve_id = vuln.get("cveID", "")
+        recent.append(
+            {
+                "id": cve_id,
+                "name": vuln.get("vulnerabilityName", ""),
+                "vendor": vuln.get("vendorProject", ""),
+                "product": vuln.get("product", ""),
+                "description": vuln.get("shortDescription", ""),
+                "date_added": date_str,
+                "ransomware": vuln.get("knownRansomwareCampaignUse", "Unknown"),
+                "link": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+            }
+        )
+
+    recent.sort(key=lambda k: k["date_added"], reverse=True)
+    result = recent[:cap]
+    logger.info(
+        "Fetched %d KEV entr%s added in the last %d days",
+        len(result),
+        "y" if len(result) == 1 else "ies",
+        days,
+    )
+    return result
+
+
 def _is_security_role(title):
     return any(keyword in title.lower() for keyword in SECURITY_KEYWORDS)
 
@@ -333,13 +391,15 @@ def fetch_all():
     data = {
         "news": fetch_rss_feeds(),
         "cves": fetch_cves(),
+        "kev": fetch_kev(),
         "jobs": fetch_jobs(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     logger.info(
-        "Fetch complete: %d news, %d cves, %d jobs",
+        "Fetch complete: %d news, %d cves, %d kev, %d jobs",
         len(data["news"]),
         len(data["cves"]),
+        len(data["kev"]),
         len(data["jobs"]),
     )
     return data

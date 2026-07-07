@@ -8,9 +8,10 @@ interaction, and your computer doesn't need to be on.
 
 ## What it does
 
-- **Fetches** from five RSS security feeds (Krebs, The Hacker News, Bleeping
-  Computer, CISA, Dark Reading), the NVD CVE API (last 24h, prioritizing CVSS
-  7.0+), and Indeed RSS for penetration-testing / cybersecurity internships.
+- **Fetches** from four RSS security feeds (Krebs, The Hacker News, Bleeping
+  Computer, Dark Reading), the NVD CVE API (last 24h, prioritizing CVSS 7.0+),
+  CISA's Known Exploited Vulnerabilities (KEV) catalog for actively-exploited
+  CVEs, and curated GitHub internship lists for security internships.
 - **Summarizes** it all with the `Llama-4-Scout-17B-16E-Instruct` model via the
   **GitHub Models API** (free with GitHub Copilot / Student), tailored to your
   studies and job search.
@@ -22,7 +23,7 @@ interaction, and your computer doesn't need to be on.
 
 | File | Purpose |
 |------|---------|
-| `fetcher.py` | All data fetching (RSS news, NVD CVEs, Indeed jobs). |
+| `fetcher.py` | All data fetching (RSS news, NVD CVEs, CISA KEV, internships). |
 | `briefing.py` | AI summarization + email rendering & sending. Entry point. |
 | `.github/workflows/morning.yml` | GitHub Actions schedule + manual trigger. |
 | `requirements.txt` | Python dependencies. |
@@ -133,30 +134,39 @@ To change the time, edit the `cron` line in `.github/workflows/morning.yml`.
 
 ## Troubleshooting
 
-### Indeed RSS stopped working (the internship section is empty)
+### The internship section is empty or stale
 
-Indeed's RSS endpoint (`https://www.indeed.com/rss?q=…&l=…`) is **unofficial and
-unreliable** — it gets rate-limited, geo-blocked, or occasionally removed
-entirely. The system is built to survive this: if the jobs fetch returns nothing,
-it logs a warning and the rest of the briefing still sends.
+Internships come from curated, community-maintained GitHub lists (`INTERNSHIP_SOURCES`
+in `fetcher.py`) — currently `SimplifyJobs/Summer2026-Internships` and
+`vanshb03/Summer2027-Internships`. These publish structured `listings.json` files
+updated daily and served from `raw.githubusercontent.com`, so they are reliable
+and never IP-blocked from GitHub Actions (unlike Indeed's deprecated RSS, which
+this project used to use and which returns 403 from runners).
 
-If it stays broken, here are your options (in `fetcher.py`):
+Things to know / do if the section looks thin:
 
-1. **Wait it out.** It often comes back on its own within a day or two. GitHub
-   Actions runners share IPs, so a block can also just be temporary.
-2. **Tweak the queries.** Edit `INDEED_QUERIES` in `fetcher.py` — simpler terms
-   (e.g. `"cybersecurity intern"`) and broader locations sometimes get through
-   when specific ones don't.
-3. **Switch to a more stable job source.** Replace the Indeed logic with another
-   feed the system can parse the same way:
-   - **LinkedIn Jobs RSS** via a third-party generator (e.g. rss.app).
-   - **We Work Remotely** security feed: `https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss`.
-   - **CyberSecJobs / Wellfound / Simplify** — many expose RSS or a simple JSON API.
-   - Because `fetch_jobs()` just returns a list of `{title, link, summary, query}`
-     dicts, you can point it at any source that yields those fields without
-     touching `briefing.py`.
-4. **Use the official Indeed Publisher API** (requires signing up for a publisher
-   key) for a supported, stable feed.
+1. **Off-cycle is normal.** In summer there are fewer *active* postings — the
+   next cycle's roles flood in during the fall. Only `active: true` roles are
+   shown; Massachusetts and remote roles are automatically sorted to the top.
+2. **Repos roll over each year.** When a new cycle starts (e.g. a
+   `Summer2028-Internships` repo appears, or Simplify publishes its 2027 repo),
+   just update the URLs in `INTERNSHIP_SOURCES`. Check the branch is `dev` and
+   the path is `.github/scripts/listings.json`.
+3. **Widen the filter.** Edit `SECURITY_KEYWORDS` in `fetcher.py` to catch more
+   role titles, or remove the `_is_security_role` filter to include all
+   internships.
+4. **Add another source.** `fetch_jobs()` accepts any JSON list whose items have
+   `title`, `company_name`, `url`, `locations`, `active`, and `date_posted`
+   fields — drop another repo's `listings.json` into `INTERNSHIP_SOURCES` and it
+   just works.
+
+### CISA KEV feed
+
+Actively-exploited CVEs come from CISA's Known Exploited Vulnerabilities catalog
+(`KEV_URL` in `fetcher.py`), a plain JSON feed that is **not** IP-blocked from
+Actions. (CISA's *advisory* RSS feed is 403-blocked from runners, which is why
+this project uses KEV instead.) The `fetch_kev(days=7)` window can be widened if
+you want more history; CISA adds entries in irregular batches, not daily.
 
 ### No email arrived
 

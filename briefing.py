@@ -66,7 +66,9 @@ or two sentences on what happened and why it matters to a security student.
 ## 🚨 CVEs TO KNOW
 Only CVSS 7.0+ or web-security-relevant CVEs. For each: `**CVE-ID** (CVSS x.x —
 Severity)` linked to NVD, then a one-line plain-English description and, where it
-applies, why it's relevant to web hacking.
+applies, why it's relevant to web hacking. **Lead with any CVEs from the CISA KEV
+list — those are confirmed actively exploited in the wild — and mark them
+`🔴 Actively exploited` (note if there's known ransomware use).**
 
 ## 🎯 RELEVANT TO YOUR HTB PATH
 Anything useful for web hacking, HTTP proxies, Burp Suite, or OWASP — tie it to
@@ -107,6 +109,23 @@ def _format_data_for_prompt(data):
                 lines.append(f"  {c['description'][:400]}")
     else:
         lines.append("(no CVEs fetched)")
+
+    lines.append("\n=== ACTIVELY EXPLOITED (CISA KEV, recently added) ===")
+    if data.get("kev"):
+        for k in data["kev"]:
+            ransom = (
+                " [known ransomware use]"
+                if str(k.get("ransomware", "")).lower() == "known"
+                else ""
+            )
+            lines.append(
+                f"- {k['id']} — {k['vendor']} {k['product']}: {k['name']}"
+                f" (added {k['date_added']}){ransom} {k['link']}"
+            )
+            if k["description"]:
+                lines.append(f"  {k['description'][:300]}")
+    else:
+        lines.append("(no recently added KEV entries)")
 
     lines.append("\n=== INTERNSHIP POSTINGS (curated GitHub internship lists) ===")
     if data["jobs"]:
@@ -164,10 +183,15 @@ def fallback_markdown(data):
         lines.append("Nothing fetched today.")
 
     lines.append("\n## 🚨 CVEs TO KNOW")
+    for k in data.get("kev", []):
+        lines.append(
+            f"- 🔴 **[{k['id']}]({k['link']})** actively exploited — "
+            f"{k['vendor']} {k['product']}: {k['name']}"
+        )
     for c in data["cves"][:20]:
         score = f"{c['score']:.1f}" if c["score"] else "N/A"
         lines.append(f"- **[{c['id']}]({c['link']})** (CVSS {score} {c['severity']})")
-    if not data["cves"]:
+    if not data["cves"] and not data.get("kev"):
         lines.append("Nothing fetched today.")
 
     lines.append("\n## 💼 INTERNSHIP OPPORTUNITIES")
