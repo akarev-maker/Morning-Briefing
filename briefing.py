@@ -47,10 +47,11 @@ Tailor tone and relevance to this person. Explain *why* items matter to them.
 """
 
 SYSTEM_PROMPT = """\
-You are a sharp cybersecurity news editor writing a concise, high-signal daily
-briefing for a specific student. Be concrete and skimmable. No fluff, no filler,
-no invented facts — only summarize what you are given. Use the provided links.
-Write in Markdown.
+You are a sharp cybersecurity news editor writing a thorough daily briefing for a
+specific student. Be concrete. Add a short description to every item so the reader
+understands it, but DO NOT DROP ITEMS to save space — completeness matters more
+than brevity here. The reader would rather scroll than miss something. No invented
+facts — only summarize what you are given. Use the provided links. Write in Markdown.
 """
 
 # The exact section layout the user asked for.
@@ -59,67 +60,73 @@ Produce the briefing using EXACTLY these Markdown sections, in this order. Use
 `##` headings with the emoji shown. Omit a section only if you truly have nothing
 for it, and if so say "Nothing notable today."
 
+Overall rule: BE COMPLETE. Include every relevant item you are given rather than a
+"best of" subset, and give each a short description. Long is fine.
+
 ## 🔥 TOP STORIES
-The most important news. For each: a bold headline linked to the source, then one
-or two sentences on what happened and why it matters to a security student.
+Cover ALL the notable news items, not just a few. For each: a bold headline linked
+to the source, then one or two sentences on what happened and why it matters to a
+security student. It's fine for this to be a long list.
 
 ## 🚨 CVEs TO KNOW
-Only CVSS 7.0+ or web-security-relevant CVEs. For each: `**CVE-ID** (CVSS x.x —
-Severity)` linked to NVD, then a one-line plain-English description and, where it
-applies, why it's relevant to web hacking. **Lead with any CVEs from the CISA KEV
-list — those are confirmed actively exploited in the wild — and mark them
-`🔴 Actively exploited` (note if there's known ransomware use).**
+Include every CVSS 7.0+ or web-security-relevant CVE you are given. For each:
+`**CVE-ID** (CVSS x.x — Severity)` linked to NVD, then a one-line plain-English
+description and, where it applies, why it's relevant to web hacking. **Lead with
+any CVEs from the CISA KEV list — those are confirmed actively exploited in the
+wild — and mark them `🔴 Actively exploited` (note if there's known ransomware
+use).**
 
 ## 🎯 RELEVANT TO YOUR HTB PATH
 Anything useful for web hacking, HTTP proxies, Burp Suite, or OWASP — tie it to
 the Web Proxies module they're on. Include HackTheBox news/announcements here too.
 
 ## 💼 INTERNSHIP OPPORTUNITIES
-A bullet list of the internship postings, each linked. Note location/remote. If
-there are none, say so and suggest checking again tomorrow.
+**List EVERY internship posting you are given — do not omit, merge, or shorten
+this list. Missing one is a failure.** Each as its own bullet, linked to the
+posting, with the company, the location (or "Remote"), and a one-line note on the
+role. Massachusetts and remote roles are most relevant — put those first — but
+still include ALL the others below them. If there are none, say so and suggest
+checking again tomorrow.
 
 ## 📌 QUICK HITS
-Short one-line bullets for other notable items that didn't fit above.
+Short one-line bullets for any other notable items that didn't fit above.
 """
 
 
 # ---------------------------------------------------------------------------
 # Prompt construction
 # ---------------------------------------------------------------------------
-# The free GitHub Models tier caps llama-4-scout at 8000 *input* tokens, so we
-# feed the model a trimmed slice of the fetched data (the full set still appears
-# in the fallback email). These caps keep the prompt comfortably under the limit;
-# MAX_PROMPT_CHARS is a final hard safety net (~4 chars/token).
-PROMPT_NEWS_CAP = 18
-PROMPT_CVES_CAP = 15
-PROMPT_JOBS_CAP = 20
-MAX_PROMPT_CHARS = 22000
+# The free GitHub Models tier caps llama-4-scout at 8000 *input* tokens. We send
+# the model EVERYTHING so nothing — especially an internship — gets dropped before
+# it's even seen, so the caps below are generous. Section ORDER is deliberate and
+# is what makes "keep all internships" safe: the must-keep, low-volume sections
+# (INTERNSHIPS, then KEV) come FIRST, news next, and CVEs LAST because CVEs are
+# the only unbounded section (a busy day brings hundreds). If MAX_PROMPT_CHARS
+# ever has to trim, it trims the tail — CVEs first, then news — and never the
+# internships. MAX_PROMPT_CHARS keeps the whole prompt under the token limit
+# (~3.3 chars/token → ~20000 chars ≈ 6100 tokens, with headroom).
+PROMPT_NEWS_CAP = 60
+PROMPT_CVES_CAP = 40
+PROMPT_JOBS_CAP = 200
+MAX_PROMPT_CHARS = 20000
 
 
 def _format_data_for_prompt(data):
     lines = []
 
-    lines.append("=== NEWS (RSS, last 24h) ===")
-    if data["news"]:
-        for item in data["news"][:PROMPT_NEWS_CAP]:
-            lines.append(f"- [{item['source']}] {item['title']}")
-            if item["link"]:
-                lines.append(f"  link: {item['link']}")
-            if item["summary"]:
-                lines.append(f"  summary: {item['summary'][:200]}")
+    # Internships FIRST — the item the reader most cares about not missing.
+    lines.append("=== INTERNSHIP POSTINGS (curated GitHub internship lists) ===")
+    lines.append("(list EVERY one of these in the briefing — do not drop any)")
+    if data["jobs"]:
+        for j in data["jobs"][:PROMPT_JOBS_CAP]:
+            company = f" @ {j['company']}" if j["company"] else ""
+            lines.append(
+                f"- {j['title']}{company} — {j['location_str']} [{j['term']}]"
+            )
+            if j["link"]:
+                lines.append(f"  link: {j['link']}")
     else:
-        lines.append("(no news fetched)")
-
-    # Highest-CVSS first (data['cves'] is already sorted descending).
-    lines.append("\n=== CVEs (NVD, last 24h — top by CVSS) ===")
-    if data["cves"]:
-        for c in data["cves"][:PROMPT_CVES_CAP]:
-            score = f"{c['score']:.1f}" if c["score"] else "N/A"
-            lines.append(f"- {c['id']} (CVSS {score} {c['severity']}) {c['link']}")
-            if c["description"]:
-                lines.append(f"  {c['description'][:200]}")
-    else:
-        lines.append("(no CVEs fetched)")
+        lines.append("(no active security internships found today)")
 
     lines.append("\n=== ACTIVELY EXPLOITED (CISA KEV, recently added) ===")
     if data.get("kev"):
@@ -134,30 +141,41 @@ def _format_data_for_prompt(data):
                 f" (added {k['date_added']}){ransom} {k['link']}"
             )
             if k["description"]:
-                lines.append(f"  {k['description'][:200]}")
+                lines.append(f"  {k['description'][:220]}")
     else:
         lines.append("(no recently added KEV entries)")
 
-    lines.append("\n=== INTERNSHIP POSTINGS (curated GitHub internship lists) ===")
-    if data["jobs"]:
-        for j in data["jobs"][:PROMPT_JOBS_CAP]:
-            company = f" @ {j['company']}" if j["company"] else ""
-            lines.append(
-                f"- {j['title']}{company} — {j['location_str']} [{j['term']}]"
-            )
-            if j["link"]:
-                lines.append(f"  link: {j['link']}")
+    lines.append("\n=== NEWS (RSS, last 24h) ===")
+    if data["news"]:
+        for item in data["news"][:PROMPT_NEWS_CAP]:
+            lines.append(f"- [{item['source']}] {item['title']}")
+            if item["link"]:
+                lines.append(f"  link: {item['link']}")
+            if item["summary"]:
+                lines.append(f"  summary: {item['summary'][:220]}")
     else:
-        lines.append("(no active security internships found today)")
+        lines.append("(no news fetched)")
+
+    # CVEs last: the only unbounded section, so it absorbs any truncation.
+    lines.append("\n=== CVEs (NVD, last 24h — sorted by CVSS, highest first) ===")
+    if data["cves"]:
+        for c in data["cves"][:PROMPT_CVES_CAP]:
+            score = f"{c['score']:.1f}" if c["score"] else "N/A"
+            lines.append(f"- {c['id']} (CVSS {score} {c['severity']}) {c['link']}")
+            if c["description"]:
+                lines.append(f"  {c['description'][:220]}")
+    else:
+        lines.append("(no CVEs fetched)")
 
     block = "\n".join(lines)
     if len(block) > MAX_PROMPT_CHARS:
         logger.warning(
-            "Prompt data %d chars — truncating to %d to fit the model's token limit",
+            "Prompt data %d chars — trimming the tail (CVEs/news) to %d to fit the "
+            "token limit; internships and KEV are first so they are never trimmed",
             len(block),
             MAX_PROMPT_CHARS,
         )
-        block = block[:MAX_PROMPT_CHARS] + "\n…(truncated)"
+        block = block[:MAX_PROMPT_CHARS] + "\n…(remaining lower-priority items omitted)"
     return block
 
 
@@ -184,7 +202,9 @@ def summarize(data):
             {"role": "user", "content": user_content},
         ],
         temperature=0.4,
-        max_tokens=2000,
+        # Generous output budget so a complete, item-by-item briefing (every
+        # internship, every notable story) isn't cut off mid-list.
+        max_tokens=4000,
     )
     content = response.choices[0].message.content
     logger.info("Received %d chars of summary", len(content or ""))
