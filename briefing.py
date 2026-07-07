@@ -86,27 +86,38 @@ Short one-line bullets for other notable items that didn't fit above.
 # ---------------------------------------------------------------------------
 # Prompt construction
 # ---------------------------------------------------------------------------
+# The free GitHub Models tier caps llama-4-scout at 8000 *input* tokens, so we
+# feed the model a trimmed slice of the fetched data (the full set still appears
+# in the fallback email). These caps keep the prompt comfortably under the limit;
+# MAX_PROMPT_CHARS is a final hard safety net (~4 chars/token).
+PROMPT_NEWS_CAP = 18
+PROMPT_CVES_CAP = 15
+PROMPT_JOBS_CAP = 20
+MAX_PROMPT_CHARS = 22000
+
+
 def _format_data_for_prompt(data):
     lines = []
 
     lines.append("=== NEWS (RSS, last 24h) ===")
     if data["news"]:
-        for item in data["news"]:
+        for item in data["news"][:PROMPT_NEWS_CAP]:
             lines.append(f"- [{item['source']}] {item['title']}")
             if item["link"]:
                 lines.append(f"  link: {item['link']}")
             if item["summary"]:
-                lines.append(f"  summary: {item['summary']}")
+                lines.append(f"  summary: {item['summary'][:200]}")
     else:
         lines.append("(no news fetched)")
 
-    lines.append("\n=== CVEs (NVD, last 24h) ===")
+    # Highest-CVSS first (data['cves'] is already sorted descending).
+    lines.append("\n=== CVEs (NVD, last 24h — top by CVSS) ===")
     if data["cves"]:
-        for c in data["cves"]:
+        for c in data["cves"][:PROMPT_CVES_CAP]:
             score = f"{c['score']:.1f}" if c["score"] else "N/A"
             lines.append(f"- {c['id']} (CVSS {score} {c['severity']}) {c['link']}")
             if c["description"]:
-                lines.append(f"  {c['description'][:400]}")
+                lines.append(f"  {c['description'][:200]}")
     else:
         lines.append("(no CVEs fetched)")
 
@@ -123,13 +134,13 @@ def _format_data_for_prompt(data):
                 f" (added {k['date_added']}){ransom} {k['link']}"
             )
             if k["description"]:
-                lines.append(f"  {k['description'][:300]}")
+                lines.append(f"  {k['description'][:200]}")
     else:
         lines.append("(no recently added KEV entries)")
 
     lines.append("\n=== INTERNSHIP POSTINGS (curated GitHub internship lists) ===")
     if data["jobs"]:
-        for j in data["jobs"]:
+        for j in data["jobs"][:PROMPT_JOBS_CAP]:
             company = f" @ {j['company']}" if j["company"] else ""
             lines.append(
                 f"- {j['title']}{company} — {j['location_str']} [{j['term']}]"
@@ -139,7 +150,15 @@ def _format_data_for_prompt(data):
     else:
         lines.append("(no active security internships found today)")
 
-    return "\n".join(lines)
+    block = "\n".join(lines)
+    if len(block) > MAX_PROMPT_CHARS:
+        logger.warning(
+            "Prompt data %d chars — truncating to %d to fit the model's token limit",
+            len(block),
+            MAX_PROMPT_CHARS,
+        )
+        block = block[:MAX_PROMPT_CHARS] + "\n…(truncated)"
+    return block
 
 
 def summarize(data):
