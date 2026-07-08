@@ -664,6 +664,20 @@ def _normalize_htb_token(raw):
     return token
 
 
+def _jwt_expiry(token):
+    """Return the JWT's `exp` (unix seconds) from its payload, or None. Reads only
+    the exp claim — nothing else is logged (Actions logs are public)."""
+    try:
+        import base64
+
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8", "ignore"))
+        return int(claims["exp"]) if claims.get("exp") else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def fetch_htb_academy():
     """Fetch the recipient's HackTheBox *Academy* progress (optional; App Token).
 
@@ -676,7 +690,7 @@ def fetch_htb_academy():
         logger.info("HTB_TOKEN not set — skipping HTB Academy.")
         return None
 
-    # Safe diagnostics (no token value): does it look like a JWT?
+    # Safe diagnostics (no token value): shape + expiry only.
     segments = token.count(".") + 1
     logger.info(
         "HTB_TOKEN present: prefix=%s, jwt_segments=%d (a valid Academy JWT starts "
@@ -684,6 +698,14 @@ def fetch_htb_academy():
         token[:3],
         segments,
     )
+    exp = _jwt_expiry(token)
+    if exp is not None:
+        mins_left = (exp - datetime.now(timezone.utc).timestamp()) / 60
+        logger.info(
+            "HTB_TOKEN expiry: %s UTC (%s)",
+            datetime.fromtimestamp(exp, timezone.utc).strftime("%Y-%m-%d %H:%M"),
+            "EXPIRED" if mins_left < 0 else f"{mins_left:.0f} min left",
+        )
 
     session = requests.Session()
     session.headers.update(
