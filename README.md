@@ -43,11 +43,11 @@ a **self-contained static dashboard** (`docs/index.html`) — today's numbers pl
 trend charts (internships, CVEs, KEV, HackTheBox points) that fill in over time.
 It's published free via **GitHub Pages** at:
 
-**https://akarev-maker.github.io/Morning-Briefing/**
+**https://midnightminigolf.xyz/Morning-Briefing/**
 
-To enable Pages (one-time): repo **Settings → Pages → Build and deployment →
-Source: Deploy from a branch → Branch: `main` / folder: `/docs`**. The workflow
-commits the regenerated dashboard back on every run.
+(Your account has a custom Pages domain, so it serves there rather than at
+`github.io`.) Pages is set to **Deploy from a branch → `main` / `/docs`**; the
+workflow commits the regenerated dashboard back on every run.
 
 ## Project structure
 
