@@ -16,8 +16,37 @@ from datetime import datetime, timedelta, timezone
 import feedparser
 import requests
 from dateutil import parser as dateparser
+from requests.adapters import HTTPAdapter
+
+try:  # urllib3 ships with requests; guard just in case
+    from urllib3.util.retry import Retry
+except Exception:  # noqa: BLE001
+    Retry = None
 
 logger = logging.getLogger("briefing.fetcher")
+
+
+def _make_session():
+    """A requests Session that retries transient failures (429/5xx) with backoff,
+    so one flaky moment from a feed/API doesn't drop that source for the day."""
+    session = requests.Session()
+    if Retry is not None:
+        retry = Retry(
+            total=2,
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset(["GET"]),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+    return session
+
+
+# Shared across all GET-based fetches. Retries only idempotent GETs on transient
+# status codes; 404s (e.g. a CVE with no PoC) are NOT retried.
+SESSION = _make_session()
 
 # A browser-like User-Agent keeps feeds/APIs from rejecting us. feedparser's own
 # HTTP client gets a 403 from some sources (e.g. CISA behind its CDN), so we fetch
@@ -38,7 +67,7 @@ def _parse_feed(url, timeout=30):
     Returns a feedparser result. Raises on a non-2xx HTTP status so the caller's
     try/except can log and move on.
     """
-    resp = requests.get(url, headers=FEED_HEADERS, timeout=timeout)
+    resp = SESSION.get(url, headers=FEED_HEADERS, timeout=timeout)
     resp.raise_for_status()
     return feedparser.parse(resp.content)
 
@@ -255,7 +284,7 @@ def fetch_cves(hours=24, min_cvss=7.0, cap=40):
     }
 
     try:
-        resp = requests.get(
+        resp = SESSION.get(
             NVD_URL,
             params=params,
             headers={"User-Agent": USER_AGENT},
@@ -306,7 +335,7 @@ def fetch_kev(days=7, cap=15):
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
     try:
-        resp = requests.get(KEV_URL, headers={"User-Agent": USER_AGENT}, timeout=40)
+        resp = SESSION.get(KEV_URL, headers={"User-Agent": USER_AGENT}, timeout=40)
         resp.raise_for_status()
         payload = resp.json()
     except Exception as exc:  # noqa: BLE001
@@ -380,7 +409,7 @@ def fetch_jobs(cap=40):
 
     for label, url in INTERNSHIP_SOURCES:
         try:
-            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=40)
+            resp = SESSION.get(url, headers={"User-Agent": USER_AGENT}, timeout=40)
             resp.raise_for_status()
             listings = resp.json()
         except Exception as exc:  # noqa: BLE001 — one bad source must not kill the run
@@ -490,7 +519,7 @@ def fetch_usajobs():
         if location:
             params["LocationName"] = location
         try:
-            resp = requests.get(USAJOBS_URL, params=params, headers=headers, timeout=30)
+            resp = SESSION.get(USAJOBS_URL, params=params, headers=headers, timeout=30)
             resp.raise_for_status()
             items = resp.json().get("SearchResult", {}).get("SearchResultItems", [])
         except Exception as exc:  # noqa: BLE001
@@ -531,7 +560,7 @@ def fetch_ctf_events(limit=8, weeks_ahead=3):
         "finish": int((now + timedelta(weeks=weeks_ahead)).timestamp()),
     }
     try:
-        resp = requests.get(
+        resp = SESSION.get(
             CTFTIME_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=30
         )
         resp.raise_for_status()
@@ -649,7 +678,7 @@ def fetch_htb_profile():
         "Accept": "application/json",
     }
     try:
-        resp = requests.get(
+        resp = SESSION.get(
             f"{HTB_API}/user/profile/basic/{user_id}", headers=headers, timeout=30
         )
         resp.raise_for_status()

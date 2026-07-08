@@ -33,8 +33,21 @@ it to you. No manual interaction, and your computer doesn't need to be on.
   issue as a backstop) so it's never silent.
 
 Email sections: 🔥 Top Stories · 🚨 CVEs to Know (with 🔴 actively-exploited and
-🧪 PoC flags) · 🎯 Relevant to Your HTB Path · 🏆 Your HackTheBox Academy Progress ·
+🧪 PoC flags) · 🎯 Relevant to Your HTB Path · 🏆 Your HackTheBox Progress ·
 🎓 Upcoming CTFs · 💼 Internship Opportunities (🆕 new-flagged) · 📌 Quick Hits.
+
+## 📊 Dashboard
+
+Each run also records a small daily snapshot to `state/history.json` and rebuilds
+a **self-contained static dashboard** (`docs/index.html`) — today's numbers plus
+trend charts (internships, CVEs, KEV, HackTheBox points) that fill in over time.
+It's published free via **GitHub Pages** at:
+
+**https://akarev-maker.github.io/Morning-Briefing/**
+
+To enable Pages (one-time): repo **Settings → Pages → Build and deployment →
+Source: Deploy from a branch → Branch: `main` / folder: `/docs`**. The workflow
+commits the regenerated dashboard back on every run.
 
 ## Project structure
 

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Cyber Briefing Dashboard</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:#0d1117; color:#c9d1d9;
+    font-family:'SFMono-Regular',Consolas,Menlo,monospace; line-height:1.5;
+  }
+  .wrap { max-width:920px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { color:#58a6ff; font-size:22px; margin:0 0 2px; letter-spacing:.5px; }
+  .updated { color:#8b949e; font-size:12px; margin-bottom:22px; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+            gap:10px; margin-bottom:26px; }
+  .tile { background:#161b22; border:1px solid #21262d; border-radius:10px;
+           padding:14px; text-align:center; }
+  .tile-val { font-size:26px; font-weight:800; }
+  .tile-label { font-size:11px; color:#8b949e; margin-top:4px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+           gap:14px; margin-bottom:26px; }
+  .card { background:#161b22; border:1px solid #21262d; border-radius:12px; padding:16px; }
+  .card-title { font-size:14px; font-weight:700; color:#e6edf3; }
+  .card-sub { font-size:11px; color:#8b949e; margin:2px 0 12px; }
+  h2 { font-size:15px; color:#58a6ff; border-bottom:1px solid #21262d;
+        padding-bottom:8px; margin:30px 0 12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid #21262d;
+            vertical-align:top; }
+  th { color:#8b949e; font-weight:600; font-size:11px; text-transform:uppercase; }
+  a { color:#79c0ff; text-decoration:none; } a:hover { text-decoration:underline; }
+  .new { background:#3fb950; color:#0d1117; font-size:10px; font-weight:800;
+          padding:1px 5px; border-radius:4px; }
+  .foot { color:#6e7681; font-size:11px; margin-top:34px; border-top:1px solid #21262d;
+           padding-top:14px; }
+  .overflow { overflow-x:auto; }
+</style></head>
+<body><div class="wrap">
+  <h1>&#128272; Cyber Briefing Dashboard</h1>
+  <div class="updated">Updated 2026-07-08 03:33 UTC · 1 day(s) of history</div>
+
+  <div class="tiles"><div class="tile">
+      <div class="tile-val" style="color:#58a6ff">40</div>
+      <div class="tile-label">CVEs today</div>
+    </div><div class="tile">
+      <div class="tile-val" style="color:#f85149">5</div>
+      <div class="tile-label">Actively exploited (KEV)</div>
+    </div><div class="tile">
+      <div class="tile-val" style="color:#d29922">4</div>
+      <div class="tile-label">With public PoC</div>
+    </div><div class="tile">
+      <div class="tile-val" style="color:#3fb950">19</div>
+      <div class="tile-label">Internships</div>
+    </div><div class="tile">
+      <div class="tile-val" style="color:#3fb950">0</div>
+      <div class="tile-label">New today</div>
+    </div><div class="tile">
+      <div class="tile-val" style="color:#bc8cff">8</div>
+      <div class="tile-label">Upcoming CTFs</div>
+    </div><div class="tile">
+      <div class="tile-val" style="color:#bc8cff">0</div>
+      <div class="tile-label">HTB points</div>
+    </div></div>
+
+  <div class="grid"><div class="card">
+      <div class="card-title">Internships tracked</div>
+      <div class="card-sub">Active security internships per day</div>
+      <svg viewBox="0 0 600 140" width="100%" preserveAspectRatio="none"
+       role="img" style="display:block">
+  <line x1="8" y1="12" x2="592" y2="12" stroke="#21262d" stroke-width="1"/>
+  <line x1="8" y1="118" x2="592" y2="118" stroke="#21262d" stroke-width="1"/>
+  <polygon points="300.0,118.0 300.0,118.0 300.0,118.0" fill="#3fb950" opacity="0.12"/>
+  <polyline points="300.0,118.0" fill="none" stroke="#3fb950" stroke-width="2"
+            stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="300.0" cy="118.0" r="4" fill="#3fb950"/>
+  <circle cx="300.0" cy="118.0" r="3" fill="#3fb950"/>
+  <text x="592" y="16" text-anchor="end" font-size="12"
+        fill="#3fb950" font-weight="700">19</text>
+  <text x="8" y="134" font-size="10" fill="#8b949e">2026-07-08</text>
+  <text x="592" y="134" text-anchor="end" font-size="10"
+        fill="#8b949e">2026-07-08</text>
+</svg>
+    </div><div class="card">
+      <div class="card-title">CVEs published</div>
+      <div class="card-sub">NVD CVEs per day (CVSS 7.0+ included)</div>
+      <svg viewBox="0 0 600 140" width="100%" preserveAspectRatio="none"
+       role="img" style="display:block">
+  <line x1="8" y1="12" x2="592" y2="12" stroke="#21262d" stroke-width="1"/>
+  <line x1="8" y1="118" x2="592" y2="118" stroke="#21262d" stroke-width="1"/>
+  <polygon points="300.0,118.0 300.0,118.0 300.0,118.0" fill="#58a6ff" opacity="0.12"/>
+  <polyline points="300.0,118.0" fill="none" stroke="#58a6ff" stroke-width="2"
+            stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="300.0" cy="118.0" r="4" fill="#58a6ff"/>
+  <circle cx="300.0" cy="118.0" r="3" fill="#58a6ff"/>
+  <text x="592" y="16" text-anchor="end" font-size="12"
+        fill="#58a6ff" font-weight="700">40</text>
+  <text x="8" y="134" font-size="10" fill="#8b949e">2026-07-08</text>
+  <text x="592" y="134" text-anchor="end" font-size="10"
+        fill="#8b949e">2026-07-08</text>
+</svg>
+    </div><div class="card">
+      <div class="card-title">Actively-exploited (CISA KEV)</div>
+      <div class="card-sub">New KEV entries per day</div>
+      <svg viewBox="0 0 600 140" width="100%" preserveAspectRatio="none"
+       role="img" style="display:block">
+  <line x1="8" y1="12" x2="592" y2="12" stroke="#21262d" stroke-width="1"/>
+  <line x1="8" y1="118" x2="592" y2="118" stroke="#21262d" stroke-width="1"/>
+  <polygon points="300.0,118.0 300.0,118.0 300.0,118.0" fill="#f85149" opacity="0.12"/>
+  <polyline points="300.0,118.0" fill="none" stroke="#f85149" stroke-width="2"
+            stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="300.0" cy="118.0" r="4" fill="#f85149"/>
+  <circle cx="300.0" cy="118.0" r="3" fill="#f85149"/>
+  <text x="592" y="16" text-anchor="end" font-size="12"
+        fill="#f85149" font-weight="700">5</text>
+  <text x="8" y="134" font-size="10" fill="#8b949e">2026-07-08</text>
+  <text x="592" y="134" text-anchor="end" font-size="10"
+        fill="#8b949e">2026-07-08</text>
+</svg>
+    </div><div class="card">
+      <div class="card-title">HackTheBox points</div>
+      <div class="card-sub">Your labs progress over time</div>
+      <svg viewBox="0 0 600 140" width="100%" preserveAspectRatio="none"
+       role="img" style="display:block">
+  <line x1="8" y1="12" x2="592" y2="12" stroke="#21262d" stroke-width="1"/>
+  <line x1="8" y1="118" x2="592" y2="118" stroke="#21262d" stroke-width="1"/>
+  <polygon points="300.0,118.0 300.0,118.0 300.0,118.0" fill="#bc8cff" opacity="0.12"/>
+  <polyline points="300.0,118.0" fill="none" stroke="#bc8cff" stroke-width="2"
+            stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="300.0" cy="118.0" r="4" fill="#bc8cff"/>
+  <circle cx="300.0" cy="118.0" r="3" fill="#bc8cff"/>
+  <text x="592" y="16" text-anchor="end" font-size="12"
+        fill="#bc8cff" font-weight="700">0 pts</text>
+  <text x="8" y="134" font-size="10" fill="#8b949e">2026-07-08</text>
+  <text x="592" y="134" text-anchor="end" font-size="10"
+        fill="#8b949e">2026-07-08</text>
+</svg>
+    </div></div>
+
+  <h2>&#128188; Current internships</h2>
+  <div class="overflow"><table>
+      <thead><tr><th>Role</th><th>Company</th><th>Location</th><th>Term</th></tr></thead>
+      <tbody><tr><td><a href="https://www.tesla.com/careers/search/job/270497">Software Engineer Intern - Software Engineer - Information Security</a></td><td>Tesla</td><td>Bellevue, WA</td><td>Fall 2026</td></tr><tr><td><a href="https://jobs.bytedance.com/en/position/7645070235035044101/detail">Applied Research Intern - AI Safety Security - Global Tech Research Program</a></td><td>ByteDance</td><td>San Jose, CA</td><td>Summer 2026</td></tr><tr><td><a href="https://jobs.ashbyhq.com/lambda/0663f04c-097d-414f-b0a0-414a7cf153d6/application">Security Engineer Intern</a></td><td>Lambda</td><td>SF</td><td>Summer 2026</td></tr><tr><td><a href="https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/US-CA-Santa-Clara/PhD-Research-Intern--Security-and-Privacy---Fall-2026_JR2010492-1">PhD Research Intern - Security and Privacy</a></td><td>NVIDIA</td><td>Santa Clara, CA</td><td>Fall 2026</td></tr><tr><td><a href="https://job-boards.eu.greenhouse.io/veeamsoftware/jobs/4857832101">Software Engineering Intern, Platform, Security &amp; AI</a></td><td>Veeam Software</td><td>San Jose, CA</td><td>Summer 2027</td></tr><tr><td><a href="https://jobs.bytedance.com/en/position/7625759034518128901/detail">Security Engineering Project - Watermark</a></td><td>ByteDance</td><td>San Jose, CA</td><td>Summer 2026</td></tr><tr><td><a href="https://jobs.bytedance.com/en/position/7595749912930420997/detail">Software Engineer Project Intern - Network Security</a></td><td>ByteDance</td><td>San Jose, CA</td><td>Summer 2026</td></tr><tr><td><a href="https://jobs.bytedance.com/en/position/7618396290598045957/detail">Security Software Engineer Project Intern - Network Security - BS/MS</a></td><td>ByteDance</td><td>San Jose, CA</td><td>Summer 2026</td></tr><tr><td><a href="https://jobs.bytedance.com/en/position/7616874229010647349/detail">Software Engineer Intern - Security-Data - BS/MS</a></td><td>ByteDance</td><td>San Jose, CA</td><td>Summer 2026</td></tr><tr><td><a href="https://jobs.smartrecruiters.com/SmithsGroup2/a22945f0-59b6-4c3f-87f1-43c05b535677">Software Engineering Intern (Cyber focus)</a></td><td>Smiths Detection</td><td>Edgewood, MD</td><td>Summer 2026</td></tr><tr><td><a href="https://lifeattiktok.com/search/7600536394771564853">Security Software Engineer Project Intern - Product Security - 2026 Start</a></td><td>TikTok</td><td>San Jose, CA</td><td>Summer 2026</td></tr><tr><td><a href="https://jobs.bytedance.com/en/position/7600176309125466373/detail">Software Engineer Project Intern - Security Engineering</a></td><td>ByteDance</td><td>San Jose, CA</td><td>Summer 2026</td></tr><tr><td><a href="https://lifeattiktok.com/search/7600535181632457013">Security Software Engineer Project Intern - Product Security - 2026 Start</a></td><td>TikTok</td><td>San Jose, CA</td><td>Spring 2026</td></tr><tr><td><a href="https://jobs.bytedance.com/en/position/7600201731980675333/detail">Security Software Engineer Project Intern - Network Security - 2026 Start</a></td><td>ByteDance</td><td>San Jose, CA</td><td>Spring 2026</td></tr><tr><td><a href="https://jobs.bytedance.com/en/position/7600175469758040325/detail">Software Engineer Project Intern - Security-Data - 2026 Start</a></td><td>ByteDance</td><td>San Jose, CA</td><td>Winter 2026</td></tr><tr><td><a href="https://jobs.bytedance.com/en/position/7600168555733027125/detail">Security Software Engineer Project Intern - Network Security - 2026 Start</a></td><td>ByteDance</td><td>San Jose, CA</td><td>Spring 2026</td></tr><tr><td><a href="https://jobs.bytedance.com/en/position/7595676762475415861/detail">Research Scientist Intern - Security for AI - 2026 Start</a></td><td>ByteDance</td><td>San Jose, CA</td><td>Spring 2026</td></tr><tr><td><a href="https://job-boards.greenhouse.io/anthropic/jobs/5030244008">Anthropic AI Security Fellow</a></td><td>Anthropic</td><td>London, UK, SF, United States, Ontario, CA</td><td>N/A</td></tr><tr><td><a href="https://www.tesla.com/careers/search/job/254590">Software Engineer Intern, Information Security</a></td><td>Tesla</td><td>Bellevue, WA</td><td>Summer 2027</td></tr></tbody>
+    </table></div>
+
+  <div class="foot">
+    Auto-generated daily by
+    <a href="https://github.com/akarev-maker/Morning-Briefing">Morning-Briefing</a>
+    · GitHub Actions + GitHub Models. Charts fill in as history accumulates.
+  </div>
+</div></body></html>

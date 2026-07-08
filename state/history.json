@@ -1,0 +1,18 @@
+[
+ {
+  "date": "2026-07-08",
+  "news": 23,
+  "cves": 40,
+  "high_cves": 40,
+  "kev": 5,
+  "kev_poc": 4,
+  "jobs": 19,
+  "new_jobs": 0,
+  "ma_remote_jobs": 0,
+  "ctf": 8,
+  "htb_points": 0,
+  "htb_rank": "",
+  "htb_user_owns": 0,
+  "htb_system_owns": 0
+ }
+]

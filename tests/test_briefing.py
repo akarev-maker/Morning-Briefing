@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import briefing  # noqa: E402
+import dashboard  # noqa: E402
 import fetcher  # noqa: E402
 
 
@@ -144,6 +145,40 @@ def test_htb_token_unwrapping():
 def test_poc_note():
     assert briefing._poc_note([]) == ""
     assert "public PoC" in briefing._poc_note([{"url": "http://x", "stars": 3}])
+
+
+# --- dashboard -------------------------------------------------------------
+def test_snapshot_counts():
+    data = {
+        "news": [1, 2, 3],
+        "cves": [{"score": 9.0}, {"score": 5.0}],
+        "kev": [{"pocs": [1]}, {"pocs": []}],
+        "jobs": [{"is_new": True, "rank": 0}, {"is_new": False, "rank": 2}],
+        "ctf": [1],
+        "htb": {"points": 42},
+    }
+    s = dashboard.snapshot(data)
+    assert s["news"] == 3 and s["cves"] == 2 and s["high_cves"] == 1
+    assert s["kev"] == 2 and s["kev_poc"] == 1
+    assert s["jobs"] == 2 and s["new_jobs"] == 1 and s["ma_remote_jobs"] == 1
+    assert s["htb_points"] == 42
+
+
+def test_record_snapshot_dedups_same_day(tmp_path):
+    p = tmp_path / "history.json"
+    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": [], "htb": None}
+    dashboard.record_snapshot(data, path=str(p))
+    hist = dashboard.record_snapshot(data, path=str(p))
+    assert len(hist) == 1  # two runs same day -> one entry, not two
+
+
+def test_render_dashboard_is_valid_html(tmp_path):
+    p = tmp_path / "index.html"
+    data = {"news": [1], "cves": [{"score": 9}], "kev": [], "jobs": [], "ctf": [], "htb": None}
+    dashboard.render_dashboard([dashboard.snapshot(data)], data, path=str(p))
+    out = p.read_text()
+    assert out.startswith("<!doctype html>") and out.rstrip().endswith("</html>")
+    assert "<svg" in out
 
 
 # --- security: injection neutralized ---------------------------------------

@@ -25,6 +25,7 @@ import markdown as md
 from dateutil import parser as dateparser
 from openai import OpenAI
 
+import dashboard
 import fetcher
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -556,6 +557,22 @@ def send_failure_email(error_text):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+def degraded_banner(data):
+    """A visible warning if the run looks degraded (major sources all empty).
+
+    NVD normally returns CVEs every day and at least one news feed works, so both
+    being empty signals a widespread fetch failure rather than a quiet news day.
+    """
+    if not data.get("news") and not data.get("cves"):
+        logger.warning("Degraded run — 0 news and 0 CVEs (likely widespread fetch failure)")
+        return (
+            "> ⚠️ **Heads up:** no news *and* no CVEs were fetched today — this "
+            "usually means several sources failed, not a quiet day. Check the "
+            "GitHub Actions logs.\n\n"
+        )
+    return ""
+
+
 def main():
     data = fetcher.fetch_all()
 
@@ -568,6 +585,8 @@ def main():
         logger.error("AI summarization failed (%s); using fallback briefing.", exc)
         markdown_text = fallback_markdown(data)
 
+    markdown_text = degraded_banner(data) + markdown_text
+
     now = datetime.now()
     date_str = now.strftime("%A, %B %d, %Y")
     subject = f"🔐 Cyber Briefing — {date_str}"
@@ -576,6 +595,9 @@ def main():
     text_body = render_plain_text(markdown_text, date_str)
 
     send_email(subject, html_body, text_body)
+
+    # Update the public dashboard after the email is safely out (never blocks it).
+    dashboard.update(data)
     logger.info("Done.")
 
 

@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Keep the pinned GitHub Actions up to date (SHA + version-comment bumps).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  # Watch Python dependencies for updates and security patches.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"
