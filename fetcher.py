@@ -71,10 +71,10 @@ CTFTIME_URL = "https://ctftime.org/api/v1/events/"
 # flag which CVEs are actually weaponized — exactly how a pentester triages.
 POC_BASE = "https://raw.githubusercontent.com/nomi-sec/PoC-in-GitHub/master"
 
-# HackTheBox Academy API (needs a personal App Token — optional; skipped if
-# unset). The recipient studies via Academy, so we track module/path progress
-# rather than the labs/machines platform.
-HTB_ACADEMY_API = "https://academy.hackthebox.com/api/v2"
+# HackTheBox labs/machines API (needs a personal App Token — optional; skipped if
+# unset). The Academy API can't be authenticated from an unattended job (it needs
+# a browser session), so we track the labs platform, where the App Token works.
+HTB_API = "https://labs.hackthebox.com/api/v4"
 
 # USAJOBS federal job search (needs a free API key — optional; skipped if unset).
 # This is where MA-area federal/defense cyber internships live (Lincoln Lab,
@@ -561,40 +561,6 @@ def fetch_ctf_events(limit=8, weeks_ahead=3):
     return result
 
 
-def _first(d, *keys, default=None):
-    """Return the first present, non-None value among keys in dict d."""
-    if not isinstance(d, dict):
-        return default
-    for k in keys:
-        if d.get(k) is not None:
-            return d[k]
-    return default
-
-
-def _log_shape(label, status, payload):
-    """Log a response's structure (keys only, not values) for schema discovery.
-
-    Values could be personal (module names, etc.) and Actions logs are public, so
-    we log only keys/lengths — enough to build the parser without leaking data.
-    """
-    shape = ""
-    if isinstance(payload, dict):
-        shape = " keys=" + ",".join(sorted(payload.keys())[:15])
-        # Peek one level into a 'data'/'info' wrapper if present.
-        inner = payload.get("data") if isinstance(payload.get("data"), (dict, list)) else None
-        if isinstance(inner, dict):
-            shape += " data.keys=" + ",".join(sorted(inner.keys())[:15])
-        elif isinstance(inner, list):
-            shape += f" data=list[{len(inner)}]"
-            if inner and isinstance(inner[0], dict):
-                shape += " item.keys=" + ",".join(sorted(inner[0].keys())[:15])
-    elif isinstance(payload, list):
-        shape = f" list[{len(payload)}]"
-        if payload and isinstance(payload[0], dict):
-            shape += " item.keys=" + ",".join(sorted(payload[0].keys())[:15])
-    logger.info("HTB Academy %s -> %s%s", label, status, shape)
-
-
 def _jwt_from_json(text):
     """Find a 3-segment JWT inside a JSON string (searches nested dicts)."""
     text = text.strip()
@@ -664,119 +630,46 @@ def _normalize_htb_token(raw):
     return token
 
 
-def _jwt_expiry(token):
-    """Return the JWT's `exp` (unix seconds) from its payload, or None. Reads only
-    the exp claim — nothing else is logged (Actions logs are public)."""
-    try:
-        import base64
+def fetch_htb_profile():
+    """Fetch the recipient's HackTheBox *labs* stats (optional; needs an App Token
+    and user ID). The labs App Token authenticates here (unlike Academy's API).
 
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8", "ignore"))
-        return int(claims["exp"]) if claims.get("exp") else None
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def fetch_htb_academy():
-    """Fetch the recipient's HackTheBox *Academy* progress (optional; App Token).
-
-    Skipped silently if HTB_TOKEN isn't set. Parsed defensively across a few
-    candidate field names; structure (not values) is logged so we can refine the
-    parser from a live run without leaking personal data into public logs.
+    Skipped silently if HTB_TOKEN / HTB_USER_ID aren't set. Parsed defensively so
+    an unexpected response shape degrades to whatever fields are present.
     """
     token = _normalize_htb_token(os.environ.get("HTB_TOKEN"))
-    if not token:
-        logger.info("HTB_TOKEN not set — skipping HTB Academy.")
+    user_id = os.environ.get("HTB_USER_ID")
+    if not token or not user_id:
+        logger.info("HTB_TOKEN/HTB_USER_ID not set — skipping HTB profile.")
         return None
 
-    # Safe diagnostics (no token value): shape + expiry only.
-    segments = token.count(".") + 1
-    logger.info(
-        "HTB_TOKEN present: prefix=%s, jwt_segments=%d (a valid Academy JWT starts "
-        "'eyJ' with 3 segments)",
-        token[:3],
-        segments,
-    )
-    exp = _jwt_expiry(token)
-    if exp is not None:
-        mins_left = (exp - datetime.now(timezone.utc).timestamp()) / 60
-        logger.info(
-            "HTB_TOKEN expiry: %s UTC (%s)",
-            datetime.fromtimestamp(exp, timezone.utc).strftime("%Y-%m-%d %H:%M"),
-            "EXPIRED" if mins_left < 0 else f"{mins_left:.0f} min left",
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+    }
+    try:
+        resp = requests.get(
+            f"{HTB_API}/user/profile/basic/{user_id}", headers=headers, timeout=30
         )
-
-    session = requests.Session()
-    session.headers.update(
-        {
-            "Authorization": f"Bearer {token}",
-            "User-Agent": USER_AGENT,
-            "Accept": "application/json, text/plain, */*",
-            # Academy's API expects browser-like origin/referer on XHR calls.
-            "Origin": "https://academy.hackthebox.com",
-            "Referer": "https://academy.hackthebox.com/dashboard",
-            "X-Requested-With": "XMLHttpRequest",
-        }
-    )
-
-    def _get(path):
-        try:
-            resp = session.get(
-                f"{HTB_ACADEMY_API}/{path}", timeout=30, allow_redirects=False
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("HTB Academy %s error: %s", path, exc)
-            return None
-        if resp.status_code != 200:
-            logger.info("HTB Academy %s -> %s (not authenticated?)", path, resp.status_code)
-            return None
-        try:
-            payload = resp.json()
-        except ValueError:
-            logger.info("HTB Academy %s -> 200 but non-JSON", path)
-            return None
-        _log_shape(path, resp.status_code, payload)
-        return payload
-
-    profile = _get("user/settings/profile")
-    modules = _get("modules/completed")
-    paths = _get("paths/enrolled")
-
-    if profile is None and modules is None and paths is None:
-        logger.warning(
-            "HTB Academy: no data returned — the App Token may not authenticate "
-            "to Academy. See README for the Academy-specific token step."
-        )
+        resp.raise_for_status()
+        profile = resp.json().get("profile", {}) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Error fetching HTB profile: %s", exc)
         return None
-
-    # Defensive extraction (refined once the discovery logs reveal exact keys).
-    prof = profile.get("data", profile) if isinstance(profile, dict) else {}
-    mod_list = modules.get("data", modules) if isinstance(modules, dict) else modules
-    path_list = paths.get("data", paths) if isinstance(paths, dict) else paths
-
-    enrolled = []
-    for p in path_list or []:
-        if not isinstance(p, dict):
-            continue
-        enrolled.append(
-            {
-                "name": _strip_html(str(_first(p, "name", "title", default=""))),
-                "progress": _first(p, "progress", "completion_percentage", "percentage", default=None),
-            }
-        )
 
     result = {
-        "name": _strip_html(str(_first(prof, "name", "username", default=""))),
-        "rank": _strip_html(str(_first(prof, "rank", "rank_name", "tier", default=""))),
-        "cubes": _first(prof, "cubes", "points", default=None),
-        "modules_completed": len(mod_list) if isinstance(mod_list, list) else _first(prof, "modules_completed", default=None),
-        "paths": enrolled,
+        "name": _strip_html(profile.get("name", "")),
+        "rank": _strip_html(profile.get("rank", "")),
+        "points": profile.get("points", 0),
+        "ranking": profile.get("ranking", ""),
+        "user_owns": profile.get("user_owns", 0),
+        "system_owns": profile.get("system_owns", 0),
+        "respects": profile.get("respects", 0),
     }
+    # Don't log the username — Actions logs on a public repo are world-readable.
     logger.info(
-        "Fetched HTB Academy progress (%s modules, %s enrolled path(s))",
-        result["modules_completed"] if result["modules_completed"] is not None else "?",
-        len(enrolled),
+        "Fetched HTB profile (rank %s, %s pts)", result["rank"] or "?", result["points"]
     )
     return result
 
@@ -901,7 +794,7 @@ def fetch_all():
         "kev": kev,
         "jobs": jobs,
         "ctf": fetch_ctf_events(),
-        "htb": fetch_htb_academy(),
+        "htb": fetch_htb_profile(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     logger.info(

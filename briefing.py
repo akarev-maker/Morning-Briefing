@@ -89,7 +89,7 @@ the Web Proxies module they're on. Include HackTheBox news/announcements here to
 
 DO NOT WRITE any of these sections — they are generated automatically from live
 data and inserted for you, and writing them yourself risks dropping or garbling
-entries: `## 🏆 YOUR HACKTHEBOX ACADEMY PROGRESS`, `## 🎓 UPCOMING CTFs`,
+entries: `## 🏆 YOUR HACKTHEBOX PROGRESS`, `## 🎓 UPCOMING CTFs`,
 `## 💼 INTERNSHIP OPPORTUNITIES`. After the HTB PATH section, skip straight to
 QUICK HITS; everything above will be inserted between them.
 
@@ -317,36 +317,29 @@ def build_ctf_markdown(events):
 
 
 def build_htb_markdown(htb):
-    """Deterministic 🏆 section: the recipient's HTB Academy progress (if any)."""
+    """Deterministic 🏆 section: the recipient's HackTheBox labs stats (if any)."""
     if not htb:
         return ""
-    lines = ["## 🏆 YOUR HACKTHEBOX ACADEMY PROGRESS"]
-
-    header = []
-    if htb.get("name"):
-        header.append(f"**{_md(htb['name'])}**")
-    if htb.get("rank"):
-        header.append(f"Tier/Rank: **{_md(htb['rank'])}**")
-    if header:
-        lines.append(" · ".join(header))
+    lines = ["## 🏆 YOUR HACKTHEBOX PROGRESS"]
+    name = _md(htb.get("name")) or "You"
+    rank = _md(htb.get("rank")) or "—"
+    lines.append(f"**{name}** · Rank: **{rank}**")
 
     stats = []
-    if htb.get("modules_completed") is not None:
-        stats.append(f"**{htb['modules_completed']}** modules completed")
-    if htb.get("cubes") is not None:
-        stats.append(f"{htb['cubes']} cubes")
+    if htb.get("points"):
+        stats.append(f"{htb['points']} pts")
+    if htb.get("ranking"):
+        stats.append(f"global #{htb['ranking']}")
+    if htb.get("user_owns"):
+        stats.append(f"{htb['user_owns']} user owns")
+    if htb.get("system_owns"):
+        stats.append(f"{htb['system_owns']} system owns")
+    if htb.get("respects"):
+        stats.append(f"{htb['respects']} respects")
     if stats:
         lines.append(f"  <br>{' · '.join(stats)}")
 
-    for p in htb.get("paths", []):
-        name = _md(p.get("name")) or "Path"
-        prog = p.get("progress")
-        if prog is not None:
-            lines.append(f"  <br>📘 {name} — {prog}% complete")
-        else:
-            lines.append(f"  <br>📘 {name}")
-
-    lines.append("  <br>*One module a day compounds fast — keep the streak going.*")
+    lines.append("  <br>*Keep the streak going — one box a day compounds fast.*")
     return "\n".join(lines)
 
 

@@ -112,27 +112,17 @@ address).
 These add sections to the briefing. Leave them out and those sections are simply
 skipped — everything else still works.
 
-**🏆 HackTheBox Academy progress** — shows your modules completed, enrolled paths,
-and tier.
+**🏆 HackTheBox progress** — shows your labs rank, points, and machine owns.
 
-> **Important:** HTB Academy uses *different* auth than the main labs platform. A
-> labs **App Token** returns `401` on the Academy API — you need an Academy bearer
-> token, which you grab from your browser session:
+> Note: this tracks the **labs/machines** platform, not HTB Academy. Academy's API
+> can't be authenticated from an unattended job (it needs a live browser session),
+> so we use the labs platform, where a durable App Token works.
 
-1. Log in to **https://academy.hackthebox.com** in your browser.
-2. Open **DevTools (F12) → Network** tab, then click around Academy (e.g. open
-   your dashboard) so requests appear.
-3. Click any request to `academy.hackthebox.com/api/v2/...`, find the
-   **`Authorization: Bearer eyJ…`** request header, and copy everything after
-   `Bearer ` (the long `eyJ…` string).
-4. Add it as the `HTB_TOKEN` secret. No user ID is needed (the endpoints are
-   scoped to your account; a leftover `HTB_USER_ID` secret is ignored).
-
-> **Caveat:** this session token can expire. If the 🏆 section disappears, grab a
-> fresh token and update the secret. Check the Actions logs for
-> `HTB Academy … (not authenticated?)` to confirm that's the cause. The first
-> successful run logs the response *structure* (keys only, no personal data) so
-> the parser can be tuned to your account's exact fields if needed.
+1. Log in to HackTheBox → **Profile Settings → App Tokens → Create App Token**.
+   Copy it.
+2. Find your numeric user ID: open your HTB profile; the URL ends in
+   `/users/<ID>` — that number is your `HTB_USER_ID`.
+3. Add two secrets: `HTB_TOKEN` (the App Token) and `HTB_USER_ID` (the number).
 
 **💼 Federal / MA cyber internships via USAJOBS** — surfaces DoD, national-lab,
 and other federal internships the GitHub lists miss.

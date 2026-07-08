@@ -185,16 +185,10 @@ def test_failure_email_no_crash_without_env(monkeypatch):
     briefing.send_failure_email("boom")  # should not raise
 
 
-def test_htb_academy_section_rendered():
+def test_htb_section_rendered():
     md = briefing.build_htb_markdown(
-        {
-            "name": "andyExel",
-            "rank": "Hacker",
-            "cubes": 120,
-            "modules_completed": 8,
-            "paths": [{"name": "Penetration Tester", "progress": 42}],
-        }
+        {"name": "andyExel", "rank": "Hacker", "points": 42, "user_owns": 3}
     )
     assert "andyExel" in md
-    assert "8" in md and "modules completed" in md
-    assert "Penetration Tester" in md and "42%" in md
+    assert "Hacker" in md
+    assert "42 pts" in md and "3 user owns" in md
