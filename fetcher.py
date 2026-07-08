@@ -647,17 +647,19 @@ def _normalize_htb_token(raw):
         return extracted
 
     # Single-segment "eyJ..." with no dots -> likely base64(JSON); decode & dig.
+    # Try both standard and URL-safe base64 (localStorage blobs use either).
     if token.startswith("eyJ") and "." not in token:
-        try:
-            import base64
+        import base64
 
-            padded = token + "=" * (-len(token) % 4)
-            decoded = base64.b64decode(padded).decode("utf-8", "ignore")
-            extracted = _jwt_from_json(decoded)
-            if extracted:
-                return extracted
-        except Exception:  # noqa: BLE001
-            pass
+        padded = token + "=" * (-len(token) % 4)
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                decoded = decoder(padded).decode("utf-8", "ignore")
+                extracted = _jwt_from_json(decoded)
+                if extracted:
+                    return extracted
+            except Exception:  # noqa: BLE001
+                continue
 
     return token
 
