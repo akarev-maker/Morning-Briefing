@@ -490,7 +490,14 @@ def fetch_usajobs():
             seen.add(uid)
             jobs.append(_normalize_usajobs_item(descriptor))
             added += 1
-        logger.info("Fetched %d USAJOBS intern posting(s) for '%s'", added, keyword)
+        # Log raw vs. matched so we can tell "API returned nothing" (seasonal)
+        # apart from "our intern filter dropped everything".
+        logger.info(
+            "USAJOBS '%s': %d posting(s) returned, %d matched intern/trainee filter",
+            keyword,
+            len(items),
+            added,
+        )
 
     return jobs
 
