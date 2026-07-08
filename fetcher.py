@@ -595,21 +595,70 @@ def _log_shape(label, status, payload):
     logger.info("HTB Academy %s -> %s%s", label, status, shape)
 
 
+def _jwt_from_json(text):
+    """Find a 3-segment JWT inside a JSON string (searches nested dicts)."""
+    text = text.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return None
+    found = []
+
+    def _scan(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if isinstance(v, str):
+                    found.append((k.lower(), v))
+                else:
+                    _scan(v)
+        elif isinstance(node, list):
+            for v in node:
+                _scan(v)
+
+    _scan(obj)
+    # Prefer token-named keys holding a real (3-segment) JWT, else any JWT value.
+    named = ("token", "access_token", "accesstoken", "id_token", "jwt", "authtoken")
+    for want in named:
+        for key, val in found:
+            if key == want and val.startswith("eyJ") and val.count(".") >= 2:
+                return val
+    for _key, val in found:
+        if val.startswith("eyJ") and val.count(".") >= 2:
+            return val
+    return None
+
+
 def _normalize_htb_token(raw):
-    """Clean a pasted HTB token: strip quotes/whitespace, a leading 'Bearer ',
-    and unwrap a JSON blob (localStorage often stores `{"token":"eyJ…"}`)."""
+    """Clean a pasted HTB token into a bare JWT.
+
+    Handles: a leading 'Bearer '/quotes, a plain JSON blob, and — the common
+    localStorage case — a base64-encoded JSON blob that itself starts with 'eyJ'
+    (so it looks like a JWT but has only one segment).
+    """
     token = (raw or "").strip().strip('"').strip()
     if token.lower().startswith("bearer "):
         token = token[7:].strip()
-    if token.startswith("{"):
+
+    # Plain JSON blob: {"token":"eyJ...."}
+    extracted = _jwt_from_json(token)
+    if extracted:
+        return extracted
+
+    # Single-segment "eyJ..." with no dots -> likely base64(JSON); decode & dig.
+    if token.startswith("eyJ") and "." not in token:
         try:
-            obj = json.loads(token)
-            for key in ("token", "access_token", "accessToken", "id_token", "jwt"):
-                if isinstance(obj.get(key), str) and obj[key]:
-                    token = obj[key]
-                    break
-        except ValueError:
+            import base64
+
+            padded = token + "=" * (-len(token) % 4)
+            decoded = base64.b64decode(padded).decode("utf-8", "ignore")
+            extracted = _jwt_from_json(decoded)
+            if extracted:
+                return extracted
+        except Exception:  # noqa: BLE001
             pass
+
     return token
 
 

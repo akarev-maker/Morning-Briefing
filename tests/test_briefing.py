@@ -128,6 +128,19 @@ def test_assemble_strips_model_written_internship_section():
     assert out.count(briefing.INTERNSHIP_HEADING) == 1  # exactly one, no dupes
 
 
+def test_htb_token_unwrapping():
+    import base64
+    import json as _json
+
+    jwt = "eyJhbGciOi.eyJzdWIiOiJ.sig"
+    assert fetcher._normalize_htb_token(jwt) == jwt  # clean passes through
+    assert fetcher._normalize_htb_token("Bearer " + jwt) == jwt  # strip prefix
+    assert fetcher._normalize_htb_token(_json.dumps({"token": jwt})) == jwt  # json blob
+    # base64-encoded JSON blob (the localStorage 'identity' case that 401'd)
+    blob = base64.b64encode(_json.dumps({"token": jwt}).encode()).decode()
+    assert fetcher._normalize_htb_token(blob) == jwt
+
+
 def test_poc_note():
     assert briefing._poc_note([]) == ""
     assert "public PoC" in briefing._poc_note([{"url": "http://x", "stars": 3}])
