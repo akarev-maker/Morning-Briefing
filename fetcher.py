@@ -451,6 +451,16 @@ def _normalize_usajobs_item(descriptor):
     }
 
 
+def _usajobs_is_intern(descriptor):
+    """True if a USAJOBS posting is an internship / Pathways student-trainee role."""
+    title = descriptor.get("PositionTitle", "").lower()
+    if any(hint in title for hint in USAJOBS_INTERN_HINTS):
+        return True
+    details = (descriptor.get("UserArea", {}) or {}).get("Details", {}) or {}
+    paths = [str(p).lower() for p in (details.get("HiringPath") or [])]
+    return any(p in ("student", "internship", "intern") for p in paths)
+
+
 def fetch_usajobs():
     """Fetch federal cyber internships from USAJOBS (optional; needs a free key).
 
@@ -480,9 +490,9 @@ def fetch_usajobs():
         added = 0
         for item in items:
             descriptor = item.get("MatchedObjectDescriptor", {})
-            title = descriptor.get("PositionTitle", "")
-            # Keep genuine internships / Pathways student-trainee roles.
-            if not any(hint in title.lower() for hint in USAJOBS_INTERN_HINTS):
+            # Keep genuine internships / Pathways student-trainee roles, judged by
+            # title OR the structured HiringPath field (more reliable than title).
+            if not _usajobs_is_intern(descriptor):
                 continue
             uid = descriptor.get("PositionID") or descriptor.get("PositionURI", "")
             if not uid or uid in seen:
