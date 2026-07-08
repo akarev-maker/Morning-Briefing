@@ -1,6 +1,6 @@
 # Version floors keep known-good behavior; upper bounds block surprise major
 # bumps (supply-chain hardening). Dependabot proposes reviewed updates.
-feedparser>=6.0.10,<7
+feedparser>=6.0.12,<7
 requests>=2.31.0,<3
 openai>=1.40.0,<3
 python-dateutil>=2.8.2,<3
