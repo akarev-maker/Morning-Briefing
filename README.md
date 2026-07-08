@@ -115,14 +115,24 @@ skipped — everything else still works.
 **🏆 HackTheBox Academy progress** — shows your modules completed, enrolled paths,
 and tier.
 
-1. Log in to HackTheBox → **Profile Settings → App Tokens → Create App Token**.
-   Copy it.
-2. Add one secret: `HTB_TOKEN` (the app token). The Academy endpoints are scoped
-   to your own account, so no user ID is needed. (A leftover `HTB_USER_ID` secret,
-   if present, is simply ignored.)
+> **Important:** HTB Academy uses *different* auth than the main labs platform. A
+> labs **App Token** returns `401` on the Academy API — you need an Academy bearer
+> token, which you grab from your browser session:
 
-> If the 🏆 section doesn't appear, the App Token may not authenticate to the
-> Academy API — check the Actions logs for `HTB Academy … (not authenticated?)`.
+1. Log in to **https://academy.hackthebox.com** in your browser.
+2. Open **DevTools (F12) → Network** tab, then click around Academy (e.g. open
+   your dashboard) so requests appear.
+3. Click any request to `academy.hackthebox.com/api/v2/...`, find the
+   **`Authorization: Bearer eyJ…`** request header, and copy everything after
+   `Bearer ` (the long `eyJ…` string).
+4. Add it as the `HTB_TOKEN` secret. No user ID is needed (the endpoints are
+   scoped to your account; a leftover `HTB_USER_ID` secret is ignored).
+
+> **Caveat:** this session token can expire. If the 🏆 section disappears, grab a
+> fresh token and update the secret. Check the Actions logs for
+> `HTB Academy … (not authenticated?)` to confirm that's the cause. The first
+> successful run logs the response *structure* (keys only, no personal data) so
+> the parser can be tuned to your account's exact fields if needed.
 
 **💼 Federal / MA cyber internships via USAJOBS** — surfaces DoD, national-lab,
 and other federal internships the GitHub lists miss.

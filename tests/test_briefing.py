@@ -165,6 +165,13 @@ def test_htb_section_empty_without_data():
     assert briefing.build_htb_markdown(None) == ""
 
 
+def test_failure_email_no_crash_without_env(monkeypatch):
+    # Must degrade gracefully (log + return), never raise, when creds are absent.
+    for var in ("EMAIL_SENDER", "EMAIL_RECIPIENT", "EMAIL_PASSWORD"):
+        monkeypatch.delenv(var, raising=False)
+    briefing.send_failure_email("boom")  # should not raise
+
+
 def test_htb_academy_section_rendered():
     md = briefing.build_htb_markdown(
         {
