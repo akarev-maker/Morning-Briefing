@@ -595,6 +595,24 @@ def _log_shape(label, status, payload):
     logger.info("HTB Academy %s -> %s%s", label, status, shape)
 
 
+def _normalize_htb_token(raw):
+    """Clean a pasted HTB token: strip quotes/whitespace, a leading 'Bearer ',
+    and unwrap a JSON blob (localStorage often stores `{"token":"eyJ…"}`)."""
+    token = (raw or "").strip().strip('"').strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    if token.startswith("{"):
+        try:
+            obj = json.loads(token)
+            for key in ("token", "access_token", "accessToken", "id_token", "jwt"):
+                if isinstance(obj.get(key), str) and obj[key]:
+                    token = obj[key]
+                    break
+        except ValueError:
+            pass
+    return token
+
+
 def fetch_htb_academy():
     """Fetch the recipient's HackTheBox *Academy* progress (optional; App Token).
 
@@ -602,17 +620,30 @@ def fetch_htb_academy():
     candidate field names; structure (not values) is logged so we can refine the
     parser from a live run without leaking personal data into public logs.
     """
-    token = os.environ.get("HTB_TOKEN")
+    token = _normalize_htb_token(os.environ.get("HTB_TOKEN"))
     if not token:
         logger.info("HTB_TOKEN not set — skipping HTB Academy.")
         return None
+
+    # Safe diagnostics (no token value): does it look like a JWT?
+    segments = token.count(".") + 1
+    logger.info(
+        "HTB_TOKEN present: prefix=%s, jwt_segments=%d (a valid Academy JWT starts "
+        "'eyJ' with 3 segments)",
+        token[:3],
+        segments,
+    )
 
     session = requests.Session()
     session.headers.update(
         {
             "Authorization": f"Bearer {token}",
             "User-Agent": USER_AGENT,
-            "Accept": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            # Academy's API expects browser-like origin/referer on XHR calls.
+            "Origin": "https://academy.hackthebox.com",
+            "Referer": "https://academy.hackthebox.com/dashboard",
+            "X-Requested-With": "XMLHttpRequest",
         }
     )
 
