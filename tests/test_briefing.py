@@ -16,6 +16,9 @@ import fetcher  # noqa: E402
 
 
 def _job(title, link, rank=2, is_new=False, company="Acme", term="Summer 2026"):
+    # Wrap bare identifiers into real URLs (the code correctly drops non-http links).
+    if not link.startswith("http"):
+        link = f"https://example.com/{link}"
     return {
         "title": title,
         "link": link,
@@ -60,7 +63,7 @@ def test_flag_new_jobs_first_run_is_baseline():
 
 def test_flag_new_jobs_detects_new():
     jobs = [_job("A", "a"), _job("B", "b")]
-    fetcher.flag_new_jobs(jobs, seen={"a"})
+    fetcher.flag_new_jobs(jobs, seen={fetcher._job_id(jobs[0])})
     assert not jobs[0]["is_new"]  # already seen
     assert jobs[1]["is_new"]  # new since last run
 
@@ -141,6 +144,33 @@ def test_skillbuilder_matches_todays_vulns():
 def test_poc_note():
     assert briefing._poc_note([]) == ""
     assert "public PoC" in briefing._poc_note([{"url": "http://x", "stars": 3}])
+
+
+# --- security: injection neutralized ---------------------------------------
+def test_strip_html_removes_tags():
+    assert "<img" not in fetcher._strip_html("Acme <img src=x onerror=alert(1)> Co")
+    assert "script" not in fetcher._strip_html("<script>alert(1)</script>").lower()
+
+
+def test_md_escapes_control_chars():
+    out = briefing._md("Evil [click](http://bad) **x**")
+    assert "\\[" in out and "\\]" in out and "\\*" in out
+
+
+def test_safe_url_blocks_non_http():
+    assert briefing._safe_url("javascript:alert(1)") == ""
+    assert briefing._safe_url("data:text/html,x") == ""
+    assert briefing._safe_url("https://ok.com") == "https://ok.com"
+
+
+def test_hostile_job_cannot_forge_link_or_markup():
+    import markdown as mdlib
+
+    evil = _job("Nice <img src=x onerror=alert(1)> [phish](http://evil)", "https://real")
+    html = mdlib.markdown(briefing.build_internships_markdown([evil]), extensions=["extra"])
+    assert "<img" not in html  # no live tag — angle brackets escaped by _md
+    assert 'href="http://evil"' not in html  # forged link neutralized by _md
+    assert 'href="https://real"' in html  # the legitimate link still works
 
 
 # --- briefing: HTB section only when data present -------------------------

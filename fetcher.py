@@ -9,6 +9,7 @@ of crashing the whole run.
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -153,18 +154,25 @@ def _entry_datetime(entry):
     return None
 
 
-def _clean_summary(text, limit=400):
-    """Strip HTML tags and squash whitespace from an RSS summary."""
+def _strip_html(text, limit=None):
+    """Strip HTML tags and squash whitespace from untrusted free text.
+
+    Security: feed items, CVE/KEV text, job titles, and (user-submitted) CTF event
+    names all flow into a Markdown->HTML email. Removing tags at the source stops
+    a hostile entry from injecting markup (e.g. `<img onerror=...>`) into the email.
+    """
     if not text:
         return ""
-    # Cheap tag stripping — good enough for feeding a language model.
-    import re
-
-    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"<[^>]+>", " ", str(text))
     text = re.sub(r"\s+", " ", text).strip()
-    if len(text) > limit:
+    if limit and len(text) > limit:
         text = text[:limit].rsplit(" ", 1)[0] + "…"
     return text
+
+
+def _clean_summary(text, limit=400):
+    """Backwards-compatible alias — strip tags with a length cap."""
+    return _strip_html(text, limit=limit)
 
 
 def fetch_rss_feeds(hours=24):
@@ -189,7 +197,7 @@ def fetch_rss_feeds(hours=24):
                 items.append(
                     {
                         "source": source,
-                        "title": entry.get("title", "(untitled)").strip(),
+                        "title": _strip_html(entry.get("title", "(untitled)")),
                         "link": entry.get("link", ""),
                         "summary": _clean_summary(entry.get("summary", "")),
                         "published": published.isoformat() if published else "",
@@ -267,7 +275,7 @@ def fetch_cves(hours=24, min_cvss=7.0, cap=40):
                 "score": score if score is not None else 0.0,
                 "severity": severity,
                 "vector": vector,
-                "description": _english_description(cve),
+                "description": _strip_html(_english_description(cve)),
                 "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id', '')}",
             }
         )
@@ -316,10 +324,10 @@ def fetch_kev(days=7, cap=15):
         recent.append(
             {
                 "id": cve_id,
-                "name": vuln.get("vulnerabilityName", ""),
-                "vendor": vuln.get("vendorProject", ""),
-                "product": vuln.get("product", ""),
-                "description": vuln.get("shortDescription", ""),
+                "name": _strip_html(vuln.get("vulnerabilityName", "")),
+                "vendor": _strip_html(vuln.get("vendorProject", "")),
+                "product": _strip_html(vuln.get("product", "")),
+                "description": _strip_html(vuln.get("shortDescription", "")),
                 "date_added": date_str,
                 "ransomware": vuln.get("knownRansomwareCampaignUse", "Unknown"),
                 "link": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
@@ -394,8 +402,8 @@ def fetch_jobs(cap=40):
             degrees = item.get("degrees") or []
             jobs.append(
                 {
-                    "title": title.strip(),
-                    "company": (item.get("company_name") or "").strip(),
+                    "title": _strip_html(title),
+                    "company": _strip_html(item.get("company_name") or ""),
                     "link": item.get("url", ""),
                     "locations": locations,
                     "location_str": ", ".join(locations) if locations else "Unspecified",
@@ -436,8 +444,8 @@ def _normalize_usajobs_item(descriptor):
         except (ValueError, TypeError, OverflowError):
             date_posted = 0
     return {
-        "title": descriptor.get("PositionTitle", "").strip(),
-        "company": (descriptor.get("OrganizationName") or "").strip(),
+        "title": _strip_html(descriptor.get("PositionTitle", "")),
+        "company": _strip_html(descriptor.get("OrganizationName") or ""),
         "link": descriptor.get("PositionURI", ""),
         "locations": locations,
         "location_str": ", ".join(locations) if locations else "Unspecified",
@@ -534,11 +542,11 @@ def fetch_ctf_events(limit=8, weeks_ahead=3):
     for e in events:
         parsed.append(
             {
-                "title": e.get("title", ""),
+                "title": _strip_html(e.get("title", "")),
                 "start": e.get("start", ""),
                 "finish": e.get("finish", ""),
                 "url": e.get("url") or e.get("ctftime_url", ""),
-                "format": e.get("format", ""),
+                "format": _strip_html(e.get("format", "")),
                 "onsite": bool(e.get("onsite", False)),
                 "location": e.get("location", "")
                 or ("On-site" if e.get("onsite") else "Online"),
@@ -580,19 +588,19 @@ def fetch_htb_profile():
 
     team = profile.get("team")
     result = {
-        "name": profile.get("name", ""),
-        "rank": profile.get("rank", ""),
+        "name": _strip_html(profile.get("name", "")),
+        "rank": _strip_html(profile.get("rank", "")),
         "points": profile.get("points", 0),
         "ranking": profile.get("ranking", ""),
         "user_owns": profile.get("user_owns", 0),
         "system_owns": profile.get("system_owns", 0),
         "respects": profile.get("respects", 0),
-        "country": profile.get("country_name", ""),
-        "team": team.get("name", "") if isinstance(team, dict) else "",
+        "country": _strip_html(profile.get("country_name", "")),
+        "team": _strip_html(team.get("name", "")) if isinstance(team, dict) else "",
     }
+    # Don't log the username — Actions logs on a public repo are world-readable.
     logger.info(
-        "Fetched HTB profile for %s (rank %s, %s pts)",
-        result["name"] or user_id,
+        "Fetched HTB profile (rank %s, %s pts)",
         result["rank"] or "?",
         result["points"],
     )

@@ -12,6 +12,7 @@ built directly from the fetched data so the run is never silently lost.
 
 import logging
 import os
+import re
 import smtplib
 import ssl
 import sys
@@ -98,6 +99,27 @@ Short one-line bullets for any other notable items that didn't fit above.
 # some. This heading must match what we splice against in assemble_briefing().
 INTERNSHIP_HEADING = "## 💼 INTERNSHIP OPPORTUNITIES"
 QUICK_HITS_HEADING = "## 📌 QUICK HITS"
+
+
+def _md(text):
+    """Escape Markdown-control characters in untrusted text.
+
+    Second layer of defense (HTML tags are already stripped in fetcher): stops a
+    feed/job/CTF title containing `[x](y)` or `*` from forging links, adding
+    emphasis, or breaking the layout of a code-built section.
+    """
+    if not text:
+        return ""
+    out = str(text)
+    for ch in ("\\", "`", "*", "_", "[", "]", "<", ">"):
+        out = out.replace(ch, "\\" + ch)
+    return out
+
+
+def _safe_url(url):
+    """Allow only http(s) URLs — blocks javascript:/data: link injection."""
+    url = (url or "").strip()
+    return url if url.startswith(("http://", "https://")) else ""
 
 
 # ---------------------------------------------------------------------------
@@ -242,25 +264,27 @@ def build_internships_markdown(jobs):
     ordered = sorted(jobs, key=lambda j: not j.get("is_new"))
     for j in ordered:
         flag = "🆕 " if j.get("is_new") else ""
-        title = f"**[{j['title']}]({j['link']})**" if j.get("link") else f"**{j['title']}**"
-        lead = f"{flag}{title} — {j['company']}" if j.get("company") else f"{flag}{title}"
+        name = _md(j["title"])
+        link = _safe_url(j.get("link"))
+        title = f"**[{name}]({link})**" if link else f"**{name}**"
+        lead = f"{flag}{title} — {_md(j['company'])}" if j.get("company") else f"{flag}{title}"
         lines.append(f"- {lead}")
 
         # Detail line: location · term · category · degrees.
-        details = [f"📍 {j['location_str']}"]
+        details = [f"📍 {_md(j['location_str'])}"]
         if j.get("term"):
-            details.append(j["term"])
+            details.append(_md(j["term"]))
         if j.get("category"):
-            details.append(j["category"])
+            details.append(_md(j["category"]))
         degrees = j.get("degrees") or []
         if degrees:
-            details.append("/".join(degrees))
+            details.append(_md("/".join(degrees)))
         lines.append(f"  <br>{' · '.join(details)}")
 
         # Visa/citizenship flag — matters a lot for internship eligibility.
         sponsorship = (j.get("sponsorship") or "").lower()
         if "citizen" in sponsorship or "does not offer" in sponsorship:
-            lines.append(f"  <br>⚠️ {j['sponsorship']}")
+            lines.append(f"  <br>⚠️ {_md(j['sponsorship'])}")
     return "\n".join(lines)
 
 
@@ -364,9 +388,11 @@ def build_ctf_markdown(events):
             when = start.strftime("%a %b %d")
         except (ValueError, TypeError):
             pass
-        place = "🌐 Online" if not e.get("onsite") else f"📍 {e.get('location', 'On-site')}"
-        fmt = f" · {e['format']}" if e.get("format") else ""
-        title = f"**[{e['title']}]({e['url']})**" if e.get("url") else f"**{e['title']}**"
+        place = "🌐 Online" if not e.get("onsite") else f"📍 {_md(e.get('location', 'On-site'))}"
+        fmt = f" · {_md(e['format'])}" if e.get("format") else ""
+        name = _md(e["title"])
+        url = _safe_url(e.get("url"))
+        title = f"**[{name}]({url})**" if url else f"**{name}**"
         lines.append(f"- {title} — {when}{rel} · {place}{fmt}")
     return "\n".join(lines)
 
@@ -376,8 +402,8 @@ def build_htb_markdown(htb):
     if not htb:
         return ""
     lines = ["## 🏆 YOUR HACKTHEBOX PROGRESS"]
-    name = htb.get("name") or "You"
-    rank = htb.get("rank") or "—"
+    name = _md(htb.get("name")) or "You"
+    rank = _md(htb.get("rank")) or "—"
     lines.append(f"**{name}** · Rank: **{rank}**")
     stats = []
     if htb.get("points"):
@@ -436,7 +462,9 @@ def fallback_markdown(data):
 
     lines.append("## 🔥 TOP STORIES")
     for item in data["news"][:15]:
-        lines.append(f"- **[{item['title']}]({item['link']})** — {item['source']}")
+        lines.append(
+            f"- **[{_md(item['title'])}]({_safe_url(item['link'])})** — {item['source']}"
+        )
     if not data["news"]:
         lines.append("Nothing fetched today.")
 
@@ -444,14 +472,15 @@ def fallback_markdown(data):
     for k in data.get("kev", []):
         poc = " · 🧪 PoC" if k.get("pocs") else ""
         lines.append(
-            f"- 🔴 **[{k['id']}]({k['link']})** actively exploited — "
-            f"{k['vendor']} {k['product']}: {k['name']}{poc}"
+            f"- 🔴 **[{_md(k['id'])}]({_safe_url(k['link'])})** actively exploited — "
+            f"{_md(k['vendor'])} {_md(k['product'])}: {_md(k['name'])}{poc}"
         )
     for c in data["cves"][:20]:
         score = f"{c['score']:.1f}" if c["score"] else "N/A"
         poc = " · 🧪 PoC" if c.get("pocs") else ""
         lines.append(
-            f"- **[{c['id']}]({c['link']})** (CVSS {score} {c['severity']}){poc}"
+            f"- **[{_md(c['id'])}]({_safe_url(c['link'])})** "
+            f"(CVSS {score} {_md(c['severity'])}){poc}"
         )
     if not data["cves"] and not data.get("kev"):
         lines.append("Nothing fetched today.")
