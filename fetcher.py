@@ -77,11 +77,16 @@ HTB_API = "https://labs.hackthebox.com/api/v4"
 # This is where MA-area federal/defense cyber internships live (Lincoln Lab,
 # national labs, DoD, etc.).
 USAJOBS_URL = "https://data.usajobs.gov/api/search"
+# Federal internships are mostly "Student Trainee" / Pathways roles, not "intern",
+# so we search for both framings.
 USAJOBS_QUERIES = [
     ("penetration tester intern", None),
     ("cybersecurity intern", "Massachusetts"),
-    ("cyber intern", None),
+    ("cybersecurity student trainee", None),
+    ("information technology student trainee", "Massachusetts"),
 ]
+# A federal posting counts as an internship if its title has any of these.
+USAJOBS_INTERN_HINTS = ("intern", "student trainee", "pathways")
 
 # Where we remember which internships we've already seen, so we can flag the ones
 # that are brand-new since yesterday. Committed back to the repo by the workflow.
@@ -476,8 +481,8 @@ def fetch_usajobs():
         for item in items:
             descriptor = item.get("MatchedObjectDescriptor", {})
             title = descriptor.get("PositionTitle", "")
-            # Keep only genuine internships.
-            if "intern" not in title.lower():
+            # Keep genuine internships / Pathways student-trainee roles.
+            if not any(hint in title.lower() for hint in USAJOBS_INTERN_HINTS):
                 continue
             uid = descriptor.get("PositionID") or descriptor.get("PositionURI", "")
             if not uid or uid in seen:
