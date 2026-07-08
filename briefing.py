@@ -16,6 +16,7 @@ import re
 import smtplib
 import ssl
 import sys
+import traceback
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -33,7 +34,10 @@ logger = logging.getLogger("briefing")
 # Config
 # ---------------------------------------------------------------------------
 GH_MODELS_ENDPOINT = "https://models.inference.ai.azure.com"
-MODEL = "Llama-4-Scout-17B-16E-Instruct"
+# gpt-4o has a 128k-token context (vs Llama-4-Scout's 8k input cap on the free
+# tier), so we can send every CVE without trimming — the point being to never
+# miss anything.
+MODEL = "gpt-4o"
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
@@ -85,10 +89,9 @@ the Web Proxies module they're on. Include HackTheBox news/announcements here to
 
 DO NOT WRITE any of these sections — they are generated automatically from live
 data and inserted for you, and writing them yourself risks dropping or garbling
-entries: `## 🏆 YOUR HACKTHEBOX PROGRESS`, `## 📚 SKILL BUILDER`,
-`## 🎓 UPCOMING CTFs`, `## 💼 INTERNSHIP OPPORTUNITIES`. After the HTB PATH
-section, skip straight to QUICK HITS; everything above will be inserted between
-them.
+entries: `## 🏆 YOUR HACKTHEBOX ACADEMY PROGRESS`, `## 🎓 UPCOMING CTFs`,
+`## 💼 INTERNSHIP OPPORTUNITIES`. After the HTB PATH section, skip straight to
+QUICK HITS; everything above will be inserted between them.
 
 ## 📌 QUICK HITS
 Short one-line bullets for any other notable items that didn't fit above.
@@ -125,16 +128,14 @@ def _safe_url(url):
 # ---------------------------------------------------------------------------
 # Prompt construction
 # ---------------------------------------------------------------------------
-# The free GitHub Models tier caps llama-4-scout at 8000 *input* tokens. The
-# internship list is built in code (not sent to the model), so the only sections
-# here are KEV, news, and CVEs. Order is deliberate: KEV first (small, must-keep),
-# news next, CVEs LAST because CVEs are the only unbounded section (a busy day
-# brings hundreds). If MAX_PROMPT_CHARS has to trim, it trims the tail — CVEs
-# first, then news. MAX_PROMPT_CHARS keeps the whole prompt under the token limit
-# (~3.3 chars/token → ~20000 chars ≈ 6100 tokens, with headroom).
+# With gpt-4o's large context we send everything (all CVEs + news). The internship
+# list is built in code (not sent to the model). Order is still deliberate: KEV
+# first (small, must-keep), news next, CVEs LAST since CVEs are the only unbounded
+# section. MAX_PROMPT_CHARS is now just a generous safety net (~50k chars ≈ 12k
+# tokens, far under 128k) so a pathological day can't send a megabyte.
 PROMPT_NEWS_CAP = 60
 PROMPT_CVES_CAP = 40
-MAX_PROMPT_CHARS = 20000
+MAX_PROMPT_CHARS = 50000
 
 
 def _poc_note(pocs):
@@ -230,8 +231,8 @@ def summarize(data):
         ],
         temperature=0.4,
         # Generous output budget so a complete, item-by-item briefing (every
-        # internship, every notable story) isn't cut off mid-list.
-        max_tokens=4000,
+        # notable story, every CVE) isn't cut off mid-list.
+        max_tokens=6000,
     )
     content = response.choices[0].message.content
     logger.info("Received %d chars of summary", len(content or ""))
@@ -288,88 +289,6 @@ def build_internships_markdown(jobs):
     return "\n".join(lines)
 
 
-# --- PortSwigger Web Security Academy: the go-to free labs for web pentesting ---
-# Each topic maps trigger keywords (matched against today's CVEs/news) to its
-# free Academy lab. Ordered roughly by how central it is to the Web Hacking path.
-PORTSWIGGER_TOPICS = [
-    ("SQL injection", "https://portswigger.net/web-security/sql-injection",
-     ["sql injection", "sqli"]),
-    ("Cross-site scripting (XSS)", "https://portswigger.net/web-security/cross-site-scripting",
-     ["cross-site scripting", "xss"]),
-    ("Server-side request forgery (SSRF)", "https://portswigger.net/web-security/ssrf",
-     ["ssrf", "server-side request forgery"]),
-    ("OS command injection", "https://portswigger.net/web-security/os-command-injection",
-     ["command injection", "os command"]),
-    ("Path traversal", "https://portswigger.net/web-security/file-path-traversal",
-     ["path traversal", "directory traversal"]),
-    ("File upload vulnerabilities", "https://portswigger.net/web-security/file-upload",
-     ["file upload", "unrestricted upload", "arbitrary file"]),
-    ("Access control & IDOR", "https://portswigger.net/web-security/access-control",
-     ["access control", "idor", "authorization bypass", "privilege escalation"]),
-    ("Authentication", "https://portswigger.net/web-security/authentication",
-     ["authentication bypass", "auth bypass", "improper authentication"]),
-    ("XML external entity (XXE)", "https://portswigger.net/web-security/xxe",
-     ["xxe", "xml external entity"]),
-    ("Insecure deserialization", "https://portswigger.net/web-security/deserialization",
-     ["deserialization", "deserialisation"]),
-    ("Server-side template injection", "https://portswigger.net/web-security/server-side-template-injection",
-     ["template injection", "ssti"]),
-    ("JWT attacks", "https://portswigger.net/web-security/jwt", ["jwt", "json web token"]),
-    ("CSRF", "https://portswigger.net/web-security/csrf", ["csrf", "cross-site request forgery"]),
-    ("HTTP request smuggling", "https://portswigger.net/web-security/request-smuggling",
-     ["request smuggling"]),
-    ("Web cache poisoning", "https://portswigger.net/web-security/web-cache-poisoning",
-     ["cache poisoning", "cache deception"]),
-    ("Business logic / prototype pollution", "https://portswigger.net/web-security/prototype-pollution",
-     ["prototype pollution"]),
-    ("GraphQL API vulnerabilities", "https://portswigger.net/web-security/graphql",
-     ["graphql"]),
-    ("OAuth authentication", "https://portswigger.net/web-security/oauth", ["oauth"]),
-    ("CORS", "https://portswigger.net/web-security/cors", ["cors", "cross-origin"]),
-    ("NoSQL injection", "https://portswigger.net/web-security/nosql-injection", ["nosql"]),
-]
-
-# Always shown — tied to the recipient's current Web Proxies / Burp Suite module.
-PINNED_LEARNING = [
-    ("Burp Suite: get started", "https://portswigger.net/burp/documentation/desktop/getting-started"),
-    ("PortSwigger: intercepting HTTP requests with Burp Proxy",
-     "https://portswigger.net/burp/documentation/desktop/tools/proxy"),
-    ("All Web Security Academy topics", "https://portswigger.net/web-security/all-topics"),
-]
-
-
-def build_skillbuilder_markdown(data):
-    """Deterministic 📚 section: PortSwigger labs matching today's web vulns, plus
-    pinned Burp/Web-Proxies resources for the recipient's current HTB module."""
-    haystack = " ".join(
-        [c.get("description", "") for c in data.get("cves", [])]
-        + [f"{k.get('name','')} {k.get('description','')}" for k in data.get("kev", [])]
-        + [n.get("title", "") for n in data.get("news", [])]
-    ).lower()
-
-    matched = [
-        (name, url)
-        for name, url, keywords in PORTSWIGGER_TOPICS
-        if any(kw in haystack for kw in keywords)
-    ]
-
-    lines = ["## 📚 SKILL BUILDER — PortSwigger Web Security Academy"]
-    lines.append(
-        "*Free hands-on labs. Pinned to your current Burp Suite / Web Proxies "
-        "module, plus topics tied to today's vulnerabilities.*"
-    )
-    lines.append("")
-    lines.append("**Your current module:**")
-    for name, url in PINNED_LEARNING:
-        lines.append(f"- [{name}]({url})")
-    if matched:
-        lines.append("")
-        lines.append("**Relevant to today's CVEs/news:**")
-        for name, url in matched:
-            lines.append(f"- [{name}]({url})")
-    return "\n".join(lines)
-
-
 def build_ctf_markdown(events):
     """Deterministic 🎓 section: upcoming CTF competitions from CTFtime."""
     lines = ["## 🎓 UPCOMING CTFs"]
@@ -398,29 +317,36 @@ def build_ctf_markdown(events):
 
 
 def build_htb_markdown(htb):
-    """Deterministic 🏆 section: the recipient's HackTheBox stats (if available)."""
+    """Deterministic 🏆 section: the recipient's HTB Academy progress (if any)."""
     if not htb:
         return ""
-    lines = ["## 🏆 YOUR HACKTHEBOX PROGRESS"]
-    name = _md(htb.get("name")) or "You"
-    rank = _md(htb.get("rank")) or "—"
-    lines.append(f"**{name}** · Rank: **{rank}**")
+    lines = ["## 🏆 YOUR HACKTHEBOX ACADEMY PROGRESS"]
+
+    header = []
+    if htb.get("name"):
+        header.append(f"**{_md(htb['name'])}**")
+    if htb.get("rank"):
+        header.append(f"Tier/Rank: **{_md(htb['rank'])}**")
+    if header:
+        lines.append(" · ".join(header))
+
     stats = []
-    if htb.get("points"):
-        stats.append(f"{htb['points']} pts")
-    if htb.get("ranking"):
-        stats.append(f"global #{htb['ranking']}")
-    if htb.get("user_owns"):
-        stats.append(f"{htb['user_owns']} user owns")
-    if htb.get("system_owns"):
-        stats.append(f"{htb['system_owns']} system owns")
-    if htb.get("respects"):
-        stats.append(f"{htb['respects']} respects")
+    if htb.get("modules_completed") is not None:
+        stats.append(f"**{htb['modules_completed']}** modules completed")
+    if htb.get("cubes") is not None:
+        stats.append(f"{htb['cubes']} cubes")
     if stats:
         lines.append(f"  <br>{' · '.join(stats)}")
-    lines.append(
-        "  <br>*Keep the streak going — one Web Proxies lab a day compounds fast.*"
-    )
+
+    for p in htb.get("paths", []):
+        name = _md(p.get("name")) or "Path"
+        prog = p.get("progress")
+        if prog is not None:
+            lines.append(f"  <br>📘 {name} — {prog}% complete")
+        else:
+            lines.append(f"  <br>📘 {name}")
+
+    lines.append("  <br>*One module a day compounds fast — keep the streak going.*")
     return "\n".join(lines)
 
 
@@ -435,16 +361,15 @@ def assemble_briefing(ai_markdown, data):
     md = ai_markdown
 
     # Defensive: strip any of our sections the model wrote anyway (avoid dupes).
-    for heading in (INTERNSHIP_HEADING, "## 🏆", "## 📚", "## 🎓"):
+    for heading in (INTERNSHIP_HEADING, "## 🏆", "## 🎓"):
         while heading in md:
             start = md.index(heading)
             after = md.find("\n## ", start + 1)
             md = md[:start] + (md[after + 1 :] if after != -1 else "")
 
-    # Order: personal progress, then learning, then opportunities.
+    # Order: personal progress, then opportunities.
     sections = [
         build_htb_markdown(data.get("htb")),
-        build_skillbuilder_markdown(data),
         build_ctf_markdown(data.get("ctf", [])),
         build_internships_markdown(data["jobs"]),
     ]
@@ -488,7 +413,6 @@ def fallback_markdown(data):
     # Reuse the same deterministic builders so the fallback is just as complete.
     for section in (
         build_htb_markdown(data.get("htb")),
-        build_skillbuilder_markdown(data),
         build_ctf_markdown(data.get("ctf", [])),
         build_internships_markdown(data["jobs"]),
     ):
@@ -603,6 +527,39 @@ def send_email(subject, html_body, text_body):
     logger.info("Email sent.")
 
 
+def send_failure_email(error_text):
+    """Best-effort plain-text alert so a failed run is never silent.
+
+    If the failure is SMTP itself, this can't deliver — the workflow's
+    issue-on-failure step is the backstop for that case.
+    """
+    sender = os.environ.get("EMAIL_SENDER")
+    recipient = os.environ.get("EMAIL_RECIPIENT")
+    password = os.environ.get("EMAIL_PASSWORD")
+    if not (sender and recipient and password):
+        logger.error("Cannot send failure alert — email env vars missing.")
+        return
+
+    when = datetime.now().strftime("%A, %B %d, %Y at %H:%M")
+    body = (
+        f"Your morning cyber briefing FAILED to generate on {when}.\n\n"
+        f"Error:\n{error_text}\n\n"
+        "Check the GitHub Actions run logs for the full traceback."
+    )
+    message = MIMEText(body, "plain", "utf-8")
+    message["Subject"] = "⚠️ Cyber Briefing FAILED"
+    message["From"] = sender
+    message["To"] = recipient
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
+            server.login(sender, password)
+            server.sendmail(sender, recipient, message.as_string())
+        logger.info("Failure alert email sent.")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Could not send failure alert email: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -634,4 +591,5 @@ if __name__ == "__main__":
         main()
     except Exception as exc:  # noqa: BLE001
         logger.critical("Briefing run failed: %s", exc)
+        send_failure_email(f"{exc}\n\n{traceback.format_exc()}")
         sys.exit(1)

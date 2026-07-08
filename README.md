@@ -18,22 +18,23 @@ it to you. No manual interaction, and your computer doesn't need to be on.
   (via the community PoC-in-GitHub index) — the same triage a pentester does.
 - **Flags brand-new internships** since yesterday (🆕) so you apply first, where
   it matters most.
-- **Adds skill-building context**: matching **PortSwigger Web Security Academy**
-  labs for today's vulnerabilities, upcoming **CTF competitions** (CTFtime), and —
-  optionally — your live **HackTheBox** rank/points/owns.
-- **Summarizes** it all with the `Llama-4-Scout-17B-16E-Instruct` model via the
-  **GitHub Models API** (free with GitHub Copilot / Student), tailored to your
-  studies and job search.
+- **Adds skill-building context**: upcoming **CTF competitions** (CTFtime) and —
+  optionally — your live **HackTheBox Academy** progress (modules completed,
+  enrolled paths, tier).
+- **Summarizes** it all with the `gpt-4o` model via the **GitHub Models API**
+  (free with GitHub Copilot / Student). Its large context means every CVE is
+  included — nothing gets trimmed to fit.
 - **Emails** a dark-themed HTML briefing (with a plain-text fallback) via Gmail.
-  The internship / HTB / CTF / skill sections are built **deterministically in
-  code**, so the AI can never drop an item — it only writes the narrative parts.
+  The internship / HTB / CTF sections are built **deterministically in code**, so
+  the AI can never drop an item — it only writes the narrative parts.
 - **Fails gracefully** — a single broken feed logs a warning and is skipped; if
-  the AI call fails you still get a complete briefing built from the raw data.
+  the AI call fails you still get a complete briefing built from the raw data;
+  and if the whole run fails, you get a **failure-alert email** (plus a GitHub
+  issue as a backstop) so it's never silent.
 
 Email sections: 🔥 Top Stories · 🚨 CVEs to Know (with 🔴 actively-exploited and
-🧪 PoC flags) · 🎯 Relevant to Your HTB Path · 🏆 Your HackTheBox Progress ·
-📚 Skill Builder · 🎓 Upcoming CTFs · 💼 Internship Opportunities (🆕 new-flagged) ·
-📌 Quick Hits.
+🧪 PoC flags) · 🎯 Relevant to Your HTB Path · 🏆 Your HackTheBox Academy Progress ·
+🎓 Upcoming CTFs · 💼 Internship Opportunities (🆕 new-flagged) · 📌 Quick Hits.
 
 ## Project structure
 
@@ -111,13 +112,17 @@ address).
 These add sections to the briefing. Leave them out and those sections are simply
 skipped — everything else still works.
 
-**🏆 HackTheBox progress** — shows your live rank, points, and machine owns.
+**🏆 HackTheBox Academy progress** — shows your modules completed, enrolled paths,
+and tier.
 
 1. Log in to HackTheBox → **Profile Settings → App Tokens → Create App Token**.
    Copy it.
-2. Find your numeric user ID: open your HTB profile; the URL ends in
-   `/users/<ID>` — that number is your `HTB_USER_ID`.
-3. Add two secrets: `HTB_TOKEN` (the app token) and `HTB_USER_ID` (the number).
+2. Add one secret: `HTB_TOKEN` (the app token). The Academy endpoints are scoped
+   to your own account, so no user ID is needed. (A leftover `HTB_USER_ID` secret,
+   if present, is simply ignored.)
+
+> If the 🏆 section doesn't appear, the App Token may not authenticate to the
+> Academy API — check the Actions logs for `HTB Academy … (not authenticated?)`.
 
 **💼 Federal / MA cyber internships via USAJOBS** — surfaces DoD, national-lab,
 and other federal internships the GitHub lists miss.

@@ -128,19 +128,6 @@ def test_assemble_strips_model_written_internship_section():
     assert out.count(briefing.INTERNSHIP_HEADING) == 1  # exactly one, no dupes
 
 
-# --- briefing: skill-builder keyword matching -----------------------------
-def test_skillbuilder_matches_todays_vulns():
-    data = {
-        "cves": [{"description": "A SQL injection in the login form"}],
-        "kev": [],
-        "news": [{"title": "New SSRF technique disclosed"}],
-    }
-    md = briefing.build_skillbuilder_markdown(data)
-    assert "SQL injection" in md
-    assert "SSRF" in md
-    assert "Burp Suite" in md  # pinned resource always present
-
-
 def test_poc_note():
     assert briefing._poc_note([]) == ""
     assert "public PoC" in briefing._poc_note([{"url": "http://x", "stars": 3}])
@@ -178,7 +165,16 @@ def test_htb_section_empty_without_data():
     assert briefing.build_htb_markdown(None) == ""
 
 
-def test_htb_section_rendered_with_data():
-    md = briefing.build_htb_markdown({"name": "hacker", "rank": "Pro Hacker", "points": 42})
-    assert "Pro Hacker" in md
-    assert "hacker" in md
+def test_htb_academy_section_rendered():
+    md = briefing.build_htb_markdown(
+        {
+            "name": "andyExel",
+            "rank": "Hacker",
+            "cubes": 120,
+            "modules_completed": 8,
+            "paths": [{"name": "Penetration Tester", "progress": 42}],
+        }
+    )
+    assert "andyExel" in md
+    assert "8" in md and "modules completed" in md
+    assert "Penetration Tester" in md and "42%" in md
