@@ -3,5 +3,5 @@
 feedparser>=6.0.10,<7
 requests>=2.31.0,<3
 openai>=1.40.0,<3
-python-dateutil>=2.8.2,<3
+python-dateutil>=2.9.0.post0,<3
 markdown>=3.5,<4
