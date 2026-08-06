@@ -21,7 +21,7 @@ it to you. No manual interaction, and your computer doesn't need to be on.
 - **Adds skill-building context**: upcoming **CTF competitions** (CTFtime) and —
   optionally — your live **HackTheBox Academy** progress (modules completed,
   enrolled paths, tier).
-- **Summarizes** it all with the `gpt-4o` model via the **GitHub Models API**
+- **Summarizes** it all with the `gemini-2.5-flash` model via the **Google Gemini API**
   (free with GitHub Copilot / Student). Its large context means every CVE is
   included — nothing gets trimmed to fit.
 - **Emails** a dark-themed HTML briefing (with a plain-text fallback) via Gmail.
@@ -69,25 +69,19 @@ Opportunities · 📌 Quick Hits.
 
 You'll need a GitHub account and a Gmail account. Total time: ~15 minutes.
 
-### 1. Get a GitHub personal access token with **Models** permission
+### 1. Get a Google Gemini API key
 
-The AI summarization uses the GitHub Models API, authenticated with a
-fine-grained personal access token (PAT).
+The AI summarization uses the Google Gemini API (via its OpenAI-compatible
+endpoint), authenticated with an API key.
 
-1. Go to **GitHub → Settings → Developer settings → Personal access tokens →
-   Fine-grained tokens** (or directly:
-   <https://github.com/settings/personal-access-tokens/new>).
-2. Click **Generate new token**.
-3. Give it a name (e.g. `morning-briefing-models`) and an expiration (90 days is
-   fine; you'll rotate it later).
-4. Under **Permissions → Account permissions**, find **Models** and set it to
-   **Read-only**. *(This is the key permission — the token needs nothing else.)*
-5. Click **Generate token** and **copy it now** — you won't see it again. This
-   is your `GH_MODELS_TOKEN`.
+1. Go to **Google AI Studio → API keys**:
+   <https://aistudio.google.com/app/apikey>.
+2. Sign in with a Google account and click **Create API key**.
+3. Copy the key — this is your `GEMINI_API_KEY`.
 
-> **Note:** GitHub Models is free but rate-limited. The free tier is plenty for a
-> once-a-day briefing. It's included with GitHub Copilot (free for students via
-> the [Student Developer Pack](https://education.github.com/pack)).
+> **Note:** Gemini's free tier is generous and rate-limited; it's plenty for a
+> once-a-day briefing. (This project previously used GitHub Models, which GitHub
+> [permanently retired on 2026-07-30](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/).)
 
 ### 2. Create a Gmail App Password (requires 2-Step Verification)
 
@@ -113,7 +107,7 @@ address).
 
    | Secret name | Value |
    |-------------|-------|
-   | `GH_MODELS_TOKEN` | The token from step 1. |
+   | `GEMINI_API_KEY` | The API key from step 1. |
    | `EMAIL_SENDER` | Your Gmail address. |
    | `EMAIL_RECIPIENT` | Where to deliver the briefing. |
    | `EMAIL_PASSWORD` | The 16-char Gmail App Password from step 2. |
@@ -161,7 +155,7 @@ Run it locally instead (optional):
 
 ```bash
 pip install -r requirements.txt
-export GH_MODELS_TOKEN="…"
+export GEMINI_API_KEY="…"
 export EMAIL_SENDER="you@gmail.com"
 export EMAIL_RECIPIENT="you@gmail.com"
 export EMAIL_PASSWORD="abcd efgh ijkl mnop"
@@ -256,9 +250,8 @@ you want more history; CISA adds entries in irregular batches, not daily.
 ### AI summarization failed
 
 - The logs will say so and the email is sent using a raw-data fallback layout.
-- Common causes: expired/incorrect `GH_MODELS_TOKEN`, the token missing the
-  **Models** permission, or hitting the free-tier rate limit. Regenerate the
-  token (step 1) and update the secret.
+- Common causes: expired/incorrect `GEMINI_API_KEY` or hitting the free-tier
+  rate limit. Regenerate the key (step 1) and update the secret.
 
 ### A news feed is missing
 
@@ -275,5 +268,5 @@ you want more history; CISA adds entries in irregular batches, not daily.
 - **News sources:** edit `RSS_FEEDS` in `fetcher.py`.
 - **CVE threshold:** change `min_cvss` in `fetch_cves()` in `fetcher.py`.
 - **Email theme:** edit `EMAIL_STYLES` / `HTML_TEMPLATE` in `briefing.py`.
-- **Model:** change `MODEL` in `briefing.py` to any model available on GitHub
-  Models (e.g. a different Llama or GPT variant).
+- **Model:** change `MODEL` in `briefing.py` to any Gemini model (e.g.
+  `gemini-2.5-pro` for higher quality, `gemini-2.5-flash-lite` for speed/cost).

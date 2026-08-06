@@ -3,7 +3,7 @@ briefing.py — turn fetched data into an AI-summarized, dark-themed email.
 
 Flow:
   1. fetcher.fetch_all()  ->  raw news / CVEs / jobs
-  2. GitHub Models (Llama-4-Scout) summarizes it for the recipient
+  2. Google Gemini summarizes it for the recipient
   3. Render dark HTML + plain-text email and send via Gmail SMTP (SSL, 465)
 
 Designed to be resilient: if the AI call fails we still send a plain briefing
@@ -34,11 +34,12 @@ logger = logging.getLogger("briefing")
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-GH_MODELS_ENDPOINT = "https://models.inference.ai.azure.com"
-# gpt-4o has a 128k-token context (vs Llama-4-Scout's 8k input cap on the free
-# tier), so we can send every CVE without trimming — the point being to never
-# miss anything.
-MODEL = "gpt-4o"
+# Google Gemini via its OpenAI-compatible endpoint. (GitHub Models, the previous
+# backend, was permanently retired by GitHub on 2026-07-30.) Gemini's free tier is
+# generous and gemini-2.5-flash has a 1M-token context, so we can send every CVE
+# without trimming — the point being to never miss anything.
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/"
+MODEL = "gemini-2.5-flash"
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
@@ -129,11 +130,11 @@ def _safe_url(url):
 # ---------------------------------------------------------------------------
 # Prompt construction
 # ---------------------------------------------------------------------------
-# With gpt-4o's large context we send everything (all CVEs + news). The internship
+# With Gemini's 1M-token context we send everything (all CVEs + news). The internship
 # list is built in code (not sent to the model). Order is still deliberate: KEV
 # first (small, must-keep), news next, CVEs LAST since CVEs are the only unbounded
 # section. MAX_PROMPT_CHARS is now just a generous safety net (~50k chars ≈ 12k
-# tokens, far under 128k) so a pathological day can't send a megabyte.
+# tokens, far under the context limit) so a pathological day can't send a megabyte.
 PROMPT_NEWS_CAP = 60
 PROMPT_CVES_CAP = 40
 MAX_PROMPT_CHARS = 50000
@@ -210,11 +211,11 @@ def _format_data_for_prompt(data):
 
 def summarize(data):
     """Call GitHub Models to produce the Markdown briefing. Returns Markdown str."""
-    token = os.environ.get("GH_MODELS_TOKEN")
+    token = os.environ.get("GEMINI_API_KEY")
     if not token:
-        raise RuntimeError("GH_MODELS_TOKEN is not set")
+        raise RuntimeError("GEMINI_API_KEY is not set")
 
-    client = OpenAI(base_url=GH_MODELS_ENDPOINT, api_key=token)
+    client = OpenAI(base_url=GEMINI_ENDPOINT, api_key=token)
     user_content = (
         RECIPIENT_CONTEXT
         + "\n"
