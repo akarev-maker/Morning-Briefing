@@ -36,10 +36,14 @@ logger = logging.getLogger("briefing")
 # ---------------------------------------------------------------------------
 # Google Gemini via its OpenAI-compatible endpoint. (GitHub Models, the previous
 # backend, was permanently retired by GitHub on 2026-07-30.) Gemini's free tier is
-# generous and gemini-2.5-flash has a 1M-token context, so we can send every CVE
+# generous and the flash models have a 1M-token context, so we can send every CVE
 # without trimming — the point being to never miss anything.
+#
+# Use the "-latest" alias rather than a pinned version: Google retires specific
+# model versions for new API keys over time (a pinned gemini-2.5-flash 404s on a
+# fresh key), so the alias keeps this working without periodic code changes.
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/"
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-flash-latest"
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465

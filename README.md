@@ -21,7 +21,7 @@ it to you. No manual interaction, and your computer doesn't need to be on.
 - **Adds skill-building context**: upcoming **CTF competitions** (CTFtime) and —
   optionally — your live **HackTheBox Academy** progress (modules completed,
   enrolled paths, tier).
-- **Summarizes** it all with the `gemini-2.5-flash` model via the **Google Gemini API**
+- **Summarizes** it all with the `gemini-flash-latest` model via the **Google Gemini API**
   (free with GitHub Copilot / Student). Its large context means every CVE is
   included — nothing gets trimmed to fit.
 - **Emails** a dark-themed HTML briefing (with a plain-text fallback) via Gmail.
@@ -269,4 +269,6 @@ you want more history; CISA adds entries in irregular batches, not daily.
 - **CVE threshold:** change `min_cvss` in `fetch_cves()` in `fetcher.py`.
 - **Email theme:** edit `EMAIL_STYLES` / `HTML_TEMPLATE` in `briefing.py`.
 - **Model:** change `MODEL` in `briefing.py` to any Gemini model (e.g.
-  `gemini-2.5-pro` for higher quality, `gemini-2.5-flash-lite` for speed/cost).
+  `gemini-pro-latest` for higher quality, `gemini-flash-lite-latest` for
+  speed/cost). Prefer the `-latest` aliases — pinned versions get retired for new
+  API keys over time.
