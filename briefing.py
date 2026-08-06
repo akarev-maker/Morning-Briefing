@@ -236,9 +236,17 @@ def summarize(data):
             {"role": "user", "content": user_content},
         ],
         temperature=0.4,
+        # Gemini's flash models "think" by default, and those hidden reasoning
+        # tokens count against max_tokens. Left unchecked they eat most of the
+        # budget, so the briefing is truncated mid-way and the CVE section — which
+        # the model writes LAST — disappears entirely. This is summarization, not a
+        # reasoning task, so keep thinking minimal and hand the budget to output.
+        reasoning_effort="low",
         # Generous output budget so a complete, item-by-item briefing (every
-        # notable story, every CVE) isn't cut off mid-list.
-        max_tokens=6000,
+        # notable story, every CVE) isn't cut off mid-list. A full day is ~6.5k
+        # output tokens; this leaves headroom (and covers a busier day, or a model
+        # that ignores reasoning_effort and still spends some thinking tokens).
+        max_tokens=12000,
     )
     content = response.choices[0].message.content
     logger.info("Received %d chars of summary", len(content or ""))
