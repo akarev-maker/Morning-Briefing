@@ -198,6 +198,101 @@ def test_safe_url_blocks_non_http():
     assert briefing._safe_url("https://ok.com") == "https://ok.com"
 
 
+def test_safe_url_ignores_whitespace_obfuscation():
+    # Mail clients/browsers ignore whitespace and control chars inside a scheme,
+    # so "java\tscript:" is a live link — it must not slip past the check.
+    assert fetcher.safe_url("java\tscript:alert(1)") == ""
+    assert fetcher.safe_url("  javascript:alert(1)") == ""
+    assert fetcher.safe_url("JAVASCRIPT:alert(1)") == ""
+    assert fetcher.safe_url(None) == ""
+    assert fetcher.safe_url("https://ok.com/a?b=1&c=2") == "https://ok.com/a?b=1&c=2"
+
+
+def test_feed_links_are_scheme_checked_at_ingest(monkeypatch):
+    """A hostile feed's javascript: link must never enter the pipeline."""
+    entry = {
+        "title": "Breaking news",
+        "link": "javascript:alert(document.cookie)",
+        "summary": "click me",
+        "published_parsed": None,
+    }
+    feed = type("F", (), {"bozo": False, "entries": [entry], "bozo_exception": None})()
+    monkeypatch.setattr(fetcher, "RSS_FEEDS", {"Evil Feed": "https://evil.example/rss"})
+    monkeypatch.setattr(fetcher, "_parse_feed", lambda url, timeout=30: feed)
+
+    items = fetcher.fetch_rss_feeds()
+    assert len(items) == 1
+    assert items[0]["link"] == ""  # dropped, not passed through to the prompt
+    assert "javascript" not in briefing._format_data_for_prompt(
+        {"news": items, "cves": [], "kev": [], "jobs": [], "ctf": []}
+    )
+
+
+def test_ctf_url_falls_back_when_primary_is_unsafe():
+    events = [{"title": "CTF", "start": "2026-08-10T13:00:00+00:00",
+               "url": "javascript:alert(1)", "ctftime_url": "https://ctftime.org/event/1"}]
+    parsed = fetcher._parse_ctf_events(events)
+    assert parsed[0]["url"] == "https://ctftime.org/event/1"
+
+
+# --- security: the model's own links are sanitized before sending -----------
+def test_render_html_neutralizes_model_written_dangerous_links():
+    """The model is told to 'use the provided links' and could echo/invent any
+    URL; its Markdown is converted to HTML and emailed, so check the output."""
+    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": []}
+    for bad in (
+        "javascript:alert(1)",
+        "JaVaScRiPt:alert(1)",
+        "java\tscript:alert(1)",
+        "&#106;avascript:alert(1)",
+        "data:text/html,x",
+    ):
+        out = briefing.render_html(f"[click]({bad})", data, "today")
+        assert "javascript" not in out.lower(), bad
+        assert "data:text/html" not in out, bad
+        assert 'href="#"' in out, bad  # neutralized, link text still readable
+
+
+def test_render_html_preserves_legitimate_links():
+    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": []}
+    out = briefing.render_html("[ok](https://nvd.nist.gov/a?b=1&c=2)", data, "today")
+    assert 'href="https://nvd.nist.gov/a?b=1&amp;c=2"' in out
+
+
+# --- briefing: an empty model response must fail loudly, not obscurely ------
+def test_summarize_raises_clear_error_on_empty_response(monkeypatch):
+    """Gemini returns a null message when it stops before emitting text (thinking
+    tokens exhausting max_tokens, or a safety block). That must surface as a
+    readable error carrying finish_reason — not an AttributeError on None."""
+    import types
+
+    class _Msg:
+        content = None
+
+    class _Choice:
+        message = _Msg()
+        finish_reason = "length"
+
+    class _Client:
+        def __init__(self, **kwargs):
+            self.chat = types.SimpleNamespace(
+                completions=types.SimpleNamespace(
+                    create=lambda **kw: types.SimpleNamespace(choices=[_Choice()])
+                )
+            )
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(briefing, "OpenAI", _Client)
+
+    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": []}
+    try:
+        briefing.summarize(data)
+    except RuntimeError as exc:
+        assert "finish_reason" in str(exc) and "length" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError for an empty model response")
+
+
 def test_hostile_job_cannot_forge_link_or_markup():
     import markdown as mdlib
 
