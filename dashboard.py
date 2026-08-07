@@ -279,7 +279,7 @@ def render_dashboard(history, data, path=DASHBOARD_PATH):
   <div class="foot">
     Auto-generated daily by
     <a href="https://github.com/akarev-maker/Morning-Briefing">Morning-Briefing</a>
-    · GitHub Actions + GitHub Models. Charts fill in as history accumulates.
+    · GitHub Actions + Google Gemini. Charts fill in as history accumulates.
   </div>
 </div></body></html>""",
     )

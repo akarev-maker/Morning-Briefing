@@ -206,6 +206,24 @@ def _clean_summary(text, limit=400):
     return _strip_html(text, limit=limit)
 
 
+def safe_url(url):
+    """Return `url` if it is a plain http(s) URL, else "".
+
+    Security: every URL here comes from an untrusted source (RSS feeds, community
+    job lists, user-submitted CTF entries, PoC repos) and ends up either in the
+    model prompt — which tells the model to "use the provided links" — or in the
+    HTML email and the public dashboard. Applying the scheme allowlist at ingest
+    means a hostile or compromised source can't get a `javascript:`/`data:` URL
+    into any of them.
+
+    Whitespace and control characters are stripped before the check because mail
+    clients and browsers ignore them inside a scheme, so `java\\tscript:` is a
+    live link even though it doesn't literally start with "javascript:".
+    """
+    cleaned = re.sub(r"[\s\x00-\x1f\x7f]+", "", str(url or ""))
+    return cleaned if cleaned.lower().startswith(("http://", "https://")) else ""
+
+
 def fetch_rss_feeds(hours=24):
     """Return recent (last `hours`) items across all configured news feeds."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -229,7 +247,7 @@ def fetch_rss_feeds(hours=24):
                     {
                         "source": source,
                         "title": _strip_html(entry.get("title", "(untitled)")),
-                        "link": entry.get("link", ""),
+                        "link": safe_url(entry.get("link", "")),
                         "summary": _clean_summary(entry.get("summary", "")),
                         "published": published.isoformat() if published else "",
                     }
@@ -435,7 +453,7 @@ def fetch_jobs(cap=40):
                 {
                     "title": _strip_html(title),
                     "company": _strip_html(item.get("company_name") or ""),
-                    "link": item.get("url", ""),
+                    "link": safe_url(item.get("url", "")),
                     "locations": locations,
                     "location_str": ", ".join(locations) if locations else "Unspecified",
                     "term": terms[0],
@@ -477,7 +495,7 @@ def _normalize_usajobs_item(descriptor):
     return {
         "title": _strip_html(descriptor.get("PositionTitle", "")),
         "company": _strip_html(descriptor.get("OrganizationName") or ""),
-        "link": descriptor.get("PositionURI", ""),
+        "link": safe_url(descriptor.get("PositionURI", "")),
         "locations": locations,
         "location_str": ", ".join(locations) if locations else "Unspecified",
         "term": "Federal",
@@ -551,6 +569,29 @@ def fetch_usajobs():
     return jobs
 
 
+def _parse_ctf_events(events):
+    """Normalize raw CTFtime event dicts, soonest first. Pure — no network."""
+    parsed = []
+    for e in events:
+        parsed.append(
+            {
+                "title": _strip_html(e.get("title", "")),
+                "start": e.get("start", ""),
+                "finish": e.get("finish", ""),
+                # Event pages are user-submitted, so scheme-check the homepage URL
+                # and fall back to the CTFtime page rather than dropping the link.
+                "url": safe_url(e.get("url")) or safe_url(e.get("ctftime_url")),
+                "format": _strip_html(e.get("format", "")),
+                "onsite": bool(e.get("onsite", False)),
+                "location": _strip_html(e.get("location", ""))
+                or ("On-site" if e.get("onsite") else "Online"),
+                "weight": e.get("weight", 0) or 0,
+            }
+        )
+    parsed.sort(key=lambda x: x["start"])
+    return parsed
+
+
 def fetch_ctf_events(limit=8, weeks_ahead=3):
     """Fetch upcoming CTF competitions from CTFtime (public API, no key)."""
     now = datetime.now(timezone.utc)
@@ -569,23 +610,7 @@ def fetch_ctf_events(limit=8, weeks_ahead=3):
         logger.warning("Error fetching CTFtime events: %s", exc)
         return []
 
-    parsed = []
-    for e in events:
-        parsed.append(
-            {
-                "title": _strip_html(e.get("title", "")),
-                "start": e.get("start", ""),
-                "finish": e.get("finish", ""),
-                "url": e.get("url") or e.get("ctftime_url", ""),
-                "format": _strip_html(e.get("format", "")),
-                "onsite": bool(e.get("onsite", False)),
-                "location": e.get("location", "")
-                or ("On-site" if e.get("onsite") else "Online"),
-                "weight": e.get("weight", 0) or 0,
-            }
-        )
-    parsed.sort(key=lambda x: x["start"])
-    result = parsed[:limit]
+    result = _parse_ctf_events(events)[:limit]
     logger.info("Fetched %d upcoming CTF event(s)", len(result))
     return result
 
@@ -718,15 +743,20 @@ def _pocs_for_cve(cve_id, session):
     except Exception:  # noqa: BLE001 — best-effort enrichment
         return []
     repos = sorted(repos, key=lambda r: r.get("stargazers_count", 0), reverse=True)
-    return [
-        {
-            "url": r.get("html_url", ""),
-            "stars": r.get("stargazers_count", 0),
-            "desc": (r.get("description") or "")[:120],
-        }
-        for r in repos[:3]
-        if r.get("html_url")
-    ]
+    pocs = []
+    for r in repos[:3]:
+        # PoC links are handed to the model with "keep the PoC link", so they get
+        # the same scheme check as every other untrusted URL.
+        url = safe_url(r.get("html_url", ""))
+        if url:
+            pocs.append(
+                {
+                    "url": url,
+                    "stars": r.get("stargazers_count", 0),
+                    "desc": _strip_html(r.get("description") or "")[:120],
+                }
+            )
+    return pocs
 
 
 def enrich_with_pocs(items, max_lookups=20):
