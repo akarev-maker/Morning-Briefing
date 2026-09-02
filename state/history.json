@@ -894,5 +894,21 @@
   "htb_rank": "Noob",
   "htb_user_owns": 0,
   "htb_system_owns": 0
+ },
+ {
+  "date": "2026-09-02",
+  "news": 31,
+  "cves": 40,
+  "high_cves": 40,
+  "kev": 11,
+  "kev_poc": 10,
+  "jobs": 29,
+  "new_jobs": 1,
+  "ma_remote_jobs": 3,
+  "ctf": 8,
+  "htb_points": 0,
+  "htb_rank": "Noob",
+  "htb_user_owns": 0,
+  "htb_system_owns": 0
  }
 ]
