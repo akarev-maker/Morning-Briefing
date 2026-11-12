@@ -1982,5 +1982,21 @@
   "htb_rank": "Noob",
   "htb_user_owns": 0,
   "htb_system_owns": 0
+ },
+ {
+  "date": "2026-11-12",
+  "news": 34,
+  "cves": 40,
+  "high_cves": 40,
+  "kev": 11,
+  "kev_poc": 7,
+  "jobs": 42,
+  "new_jobs": 8,
+  "ma_remote_jobs": 10,
+  "ctf": 8,
+  "htb_points": 0,
+  "htb_rank": "Noob",
+  "htb_user_owns": 0,
+  "htb_system_owns": 0
  }
 ]
