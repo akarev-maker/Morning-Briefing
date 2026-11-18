@@ -158,7 +158,9 @@ def _normalize_devpost(item):
     where = item.get("displayed_location") or {}
     location = fetcher._strip_html(where.get("location", ""))
     online = where.get("icon") == "globe" or location.lower() in ("online", "virtual")
-    prize = fetcher._strip_html(item.get("prize_amount", ""))
+    # Arrives as "$<span ...>10,000</span>"; drop the tags without a space.
+    prize = re.sub(r"<[^>]+>", "", item.get("prize_amount") or "").strip()
+    prize = fetcher._strip_html(prize)
     return {
         "key": _name_key(item.get("title", "")),
         "name": fetcher._strip_html(item.get("title", "")),
@@ -177,7 +179,7 @@ def _normalize_devpost(item):
 
 def fetch_devpost(max_pages=DEVPOST_MAX_PAGES):
     """Every upcoming or open Devpost hackathon. Keeps whatever pages loaded."""
-    items = []
+    items, error = [], None
     for page in range(1, max_pages + 1):
         try:
             resp = fetcher.SESSION.get(
@@ -190,11 +192,14 @@ def fetch_devpost(max_pages=DEVPOST_MAX_PAGES):
             batch = resp.json().get("hackathons", [])
         except Exception as exc:  # noqa: BLE001
             logger.warning("Error fetching Devpost page %d: %s", page, exc)
+            error = exc
             break
         if not batch:
             break
         items.extend(batch)
     logger.info("Fetched %d Devpost hackathon(s)", len(items))
+    # ~150 upcoming events at any time; zero means the API changed or broke.
+    fetcher.record_source("Devpost", len(items), error=error, expect_items=True)
     return [_normalize_devpost(i) for i in items]
 
 
@@ -260,8 +265,11 @@ def fetch_mlh(today=None):
         events = parse_mlh_page(resp.text)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Error fetching MLH events: %s", exc)
+        fetcher.record_source("MLH", 0, error=exc)
         return []
     logger.info("Fetched %d MLH event(s)", len(events))
+    # MLH always lists ~24 upcoming events. Zero means a renamed field.
+    fetcher.record_source("MLH", len(events), expect_items=True)
     return [_normalize_mlh(e) for e in events]
 
 

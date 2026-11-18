@@ -7,6 +7,7 @@ that one section, never the whole email.
 """
 
 import hashlib
+import html
 import json
 import logging
 import re
@@ -43,6 +44,38 @@ def _make_session():
 
 
 SESSION = _make_session()
+
+# How far back to look for news. Wider than 24h because GitHub starts the
+# scheduled run hours late on some days; the sent log stops repeats.
+NEWS_WINDOW_HOURS = 36
+
+
+# ---------------------------------------------------------------------------
+# Source health, shown in the email footer
+# ---------------------------------------------------------------------------
+# An exception is easy to notice. A source that quietly returns nothing (a
+# renamed field, a changed page) is not, so sources that always have items
+# pass expect_items=True and a zero is flagged as a possible failure.
+source_status = {}
+
+
+def reset_status():
+    source_status.clear()
+
+
+def record_source(name, count, error=None, expect_items=False):
+    """Record how one source did this run: ok, failed, partial, or empty."""
+    if error is not None:
+        result = "partial" if count else "failed"
+    elif count == 0 and expect_items:
+        result = "empty"
+    else:
+        result = "ok"
+    source_status[name] = {
+        "state": result,
+        "count": count,
+        "error": str(error)[:200] if error is not None else "",
+    }
 
 # Some sources return 403 to feedparser's default client, so every request goes
 # through `requests` with a browser-like User-Agent.
@@ -129,6 +162,9 @@ def _strip_html(text, limit=None):
     if not text:
         return ""
     text = re.sub(r"<[^>]+>", " ", str(text))
+    # Decode entities (&mdash; -> —) so they don't show up literally. Safe:
+    # the result is plain text, and render.py escapes it again for HTML.
+    text = html.unescape(text)
     text = re.sub(r"\s+", " ", text).strip()
     if limit and len(text) > limit:
         text = text[:limit].rsplit(" ", 1)[0] + "…"
@@ -213,6 +249,7 @@ def _fetch_feeds(feeds, category, hours):
             feed = _parse_feed(url)
             if feed.bozo and not feed.entries:
                 logger.warning("Feed '%s' failed to parse: %s", source, feed.bozo_exception)
+                record_source(source, 0, error=feed.bozo_exception or "unparseable feed")
                 continue
 
             kept = 0
@@ -232,8 +269,11 @@ def _fetch_feeds(feeds, category, hours):
                 )
                 kept += 1
             logger.info("Fetched %d recent item(s) from %s", kept, source)
+            # Blogs like Krebs often post nothing for a day, so zero is normal.
+            record_source(source, kept)
         except Exception as exc:  # noqa: BLE001 - one bad feed must not kill the run
             logger.warning("Error fetching feed '%s': %s", source, exc)
+            record_source(source, 0, error=exc)
 
     return items
 
@@ -255,7 +295,7 @@ def _story(source, category, title, link, summary, published, points=None, comme
     }
 
 
-def fetch_rss_feeds(hours=24):
+def fetch_rss_feeds(hours=NEWS_WINDOW_HOURS):
     """Recent stories from the security and AI feeds, labeled by category."""
     return _fetch_feeds(CYBER_FEEDS, "cyber", hours) + _fetch_feeds(AI_FEEDS, "ai", hours)
 
@@ -286,14 +326,17 @@ def _hn_story(entry):
     )
 
 
-def fetch_hn(hours=24):
+def fetch_hn(hours=NEWS_WINDOW_HOURS):
     """Popular Hacker News stories from the last `hours` that are cyber or AI."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     try:
         feed = _parse_feed(HN_FEED)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Error fetching Hacker News: %s", exc)
+        record_source("Hacker News", 0, error=exc)
         return []
+    # Dozens of stories pass 150 points every day; zero means something broke.
+    record_source("Hacker News", len(feed.entries), expect_items=True)
 
     stories, skipped = [], 0
     for entry in feed.entries:
@@ -327,6 +370,7 @@ def fetch_kev():
         payload = resp.json()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Error fetching CISA KEV catalog: %s", exc)
+        record_source("CISA KEV", 0, error=exc)
         return {}
 
     catalog = {}
@@ -341,6 +385,7 @@ def fetch_kev():
             "ransomware": vuln.get("knownRansomwareCampaignUse", "Unknown"),
         }
     logger.info("Loaded %d KEV entries", len(catalog))
+    record_source("CISA KEV", len(catalog), expect_items=True)
     return catalog
 
 
@@ -412,8 +457,11 @@ def fetch_ctf_events(limit=8, weeks_ahead=3):
         events = resp.json()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Error fetching CTFtime events: %s", exc)
+        record_source("CTFtime", 0, error=exc)
         return []
 
+    # CTFtime always has several events in the next three weeks.
+    record_source("CTFtime", len(events), expect_items=True)
     result = _parse_ctf_events(events)[:limit]
     logger.info("Fetched %d upcoming CTF event(s)", len(result))
     return result
