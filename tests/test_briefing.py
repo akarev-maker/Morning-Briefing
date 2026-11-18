@@ -30,6 +30,7 @@ def _news():
 def pipeline(tmp_path, monkeypatch):
     """Fake sources and SMTP. Returns the list that collects sent emails."""
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)  # coverage ranking unless a test opts in
     monkeypatch.setattr(fetcher, "fetch_all",
                         lambda: {"news": _news(), "kev": {}, "ctf": [], "generated_at": ""})
     monkeypatch.setattr(hackathons, "fetch_hackathons", lambda: [])
@@ -88,6 +89,26 @@ def test_only_shown_stories_are_recorded(pipeline, tmp_path, monkeypatch):
     briefing.main([])
     sent = state.load_sent(str(tmp_path / "state" / "sent.json"))
     assert len([k for k in sent if k.startswith("story:")]) == briefing.STORIES_PER_SECTION
+
+
+def test_gemini_picks_and_project_reach_the_email(pipeline, monkeypatch):
+    stories_seen = []
+
+    def fake_edit(stories):
+        stories_seen.extend(stories)
+        ai = next(s for s in stories if s["category"] == "ai")
+        return {"cyber": [], "ai": [{**ai, "why": "A frontier model release."}],
+                "project": {"title": "Build an eval harness", "pitch": "Long pitch.",
+                            "milestones": [], "stack": [], "inspired_by": []},
+                "model": "gemini-flash-latest"}
+
+    monkeypatch.setattr(briefing.editor, "edit", fake_edit)
+    briefing.main([])
+    _, html, _ = pipeline[0]
+    assert "A frontier model release." in html and "Build an eval harness" in html
+    assert "Optimizely hack hits CNN" not in html  # Gemini didn't pick it
+    assert "Stories picked by gemini-flash-latest." in html
+    assert len(stories_seen) == 2  # the editor saw every candidate
 
 
 def test_failure_email_no_crash_without_env(monkeypatch):

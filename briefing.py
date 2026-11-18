@@ -1,7 +1,8 @@
 """
 briefing.py: entry point. Runs the whole pipeline once.
 
-    fetch -> curate -> drop already sent -> pick -> render -> send -> save state
+    fetch -> curate -> drop already sent -> pick (Gemini, or coverage ranking
+    if it fails) -> render -> send -> save state
 
     python briefing.py            send the email, then record what was sent
     python briefing.py --dry-run  write preview.html / preview.txt instead;
@@ -23,6 +24,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import curate
+import editor
 import fetcher
 import hackathons
 import render
@@ -44,8 +46,7 @@ PREVIEW_TEXT = "preview.txt"
 def pick_stories(stories, per_section=STORIES_PER_SECTION):
     """The top stories per category, in curate's coverage order.
 
-    This is the ranking when no model is involved. Task 7 puts Gemini in front
-    of it and falls back to this when Gemini fails.
+    The fallback when Gemini is unavailable: no model, no project idea.
     """
     return {
         category: [s for s in stories if s["category"] == category][:per_section]
@@ -67,14 +68,16 @@ def build(today=None):
     sent = state.load_sent()
 
     stories = state.filter_unsent(curate.curate(data["news"], data["kev"]), sent)
-    picks = pick_stories(stories)
+    # Gemini picks if it can; otherwise coverage ranking. Never raises.
+    picks = editor.edit(stories) or pick_stories(stories)
     chosen_hackathons = hackathons.select(raw_hackathons, sent, today)
 
     briefing = {
         "cyber": picks["cyber"],
         "ai": picks["ai"],
-        "project": None,
-        "edited": False,
+        "project": picks.get("project"),
+        "edited": "model" in picks,
+        "model": picks.get("model", ""),
         "hackathons": chosen_hackathons,
         "ctf": data["ctf"],
         "status": dict(fetcher.source_status),

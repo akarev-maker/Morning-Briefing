@@ -298,8 +298,8 @@ def _ctfs_html(events, today):
 
 def _footer_html(b):
     head, problems = source_summary(b.get("status", {}))
-    ranking = ("Stories picked by Gemini." if b.get("edited")
-               else "Stories ranked by how many outlets covered them.")
+    ranking = (f"Stories picked by {b.get('model') or 'Gemini'}." if b.get("edited")
+               else "Stories ranked by how many outlets covered them (AI editor unavailable).")
     lines = [f"{_e(head)}. {_e(ranking)}"]
     for p in problems:
         lines.append(f'<span style="color:{TAG_COLORS["amber"][1]};">{_e(p)}</span>')

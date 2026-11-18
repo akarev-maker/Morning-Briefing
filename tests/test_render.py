@@ -145,6 +145,8 @@ def test_footer_all_ok_and_ranking_note():
     html = render.render_html(_briefing(), TODAY)
     assert "All 1 sources OK" in html
     assert "ranked by how many outlets covered them" in html
+    edited = render.render_html(_briefing(edited=True, model="gemini-flash-latest"), TODAY)
+    assert "Stories picked by gemini-flash-latest." in edited
 
 
 def test_degraded_banner():
