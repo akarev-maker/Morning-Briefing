@@ -1,187 +1,121 @@
-"""Network-free unit tests for the briefing's deterministic logic.
+"""Unit tests. No network: every outside call is replaced with a fake.
 
-These cover the parts that must never silently break — new-job flagging, the
-"never drop an internship" guarantee, section assembly, and relevance filters.
 Run with: pytest
 """
 
 import sys
+import types
 from pathlib import Path
 
 # Make the top-level modules importable when pytest runs from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import briefing  # noqa: E402
-import dashboard  # noqa: E402
 import fetcher  # noqa: E402
 
 
-def _job(title, link, rank=2, is_new=False, company="Acme", term="Summer 2026"):
-    # Wrap bare identifiers into real URLs (the code correctly drops non-http links).
-    if not link.startswith("http"):
-        link = f"https://example.com/{link}"
-    return {
-        "title": title,
-        "link": link,
-        "company": company,
-        "locations": ["Boston, MA"] if rank == 0 else ["Remote"],
-        "location_str": "Boston, MA" if rank == 0 else "Remote",
-        "term": term,
-        "category": "Security",
-        "sponsorship": "",
-        "degrees": [],
-        "date_posted": 0,
-        "rank": rank,
-        "is_new": is_new,
+def _data(**overrides):
+    data = {"news": [], "kev": {}, "ctf": []}
+    data.update(overrides)
+    return data
+
+
+class _FakeResponse:
+    def __init__(self, payload=None, status=200):
+        self._payload = payload
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+# --- fetcher: one broken source never kills the run ------------------------
+def test_fetch_all_returns_only_v2_sections(monkeypatch):
+    monkeypatch.setattr(fetcher, "fetch_rss_feeds", lambda: [{"title": "x"}])
+    monkeypatch.setattr(fetcher, "fetch_kev", lambda: {"CVE-2026-1": {}})
+    monkeypatch.setattr(fetcher, "fetch_ctf_events", lambda: [])
+    data = fetcher.fetch_all()
+    assert set(data) == {"news", "kev", "ctf", "generated_at"}
+
+
+def test_fetch_all_survives_every_source_failing(monkeypatch):
+    def boom(*args, **kwargs):
+        raise ConnectionError("network down")
+
+    monkeypatch.setattr(fetcher.SESSION, "get", boom)
+    data = fetcher.fetch_all()  # must not raise
+    assert data["news"] == [] and data["kev"] == {} and data["ctf"] == []
+
+
+def test_fetch_kev_builds_lookup_by_cve_id(monkeypatch):
+    payload = {
+        "vulnerabilities": [
+            {
+                "cveID": "CVE-2026-1234",
+                "vulnerabilityName": "PHP <b>RCE</b>",
+                "dateAdded": "2026-11-01",
+                "knownRansomwareCampaignUse": "Known",
+            }
+        ]
     }
+    monkeypatch.setattr(fetcher.SESSION, "get", lambda *a, **k: _FakeResponse(payload))
+    kev = fetcher.fetch_kev()
+    assert kev["CVE-2026-1234"]["name"] == "PHP RCE"  # tags stripped
+    assert kev["CVE-2026-1234"]["ransomware"] == "Known"
 
 
-# --- fetcher: relevance + ranking -----------------------------------------
-def test_is_security_role():
-    assert fetcher._is_security_role("Penetration Testing Intern")
-    assert fetcher._is_security_role("Cybersecurity Analyst Intern")
-    assert not fetcher._is_security_role("Frontend Developer Intern")
+def test_pocs_for_cve_404_means_none():
+    session = types.SimpleNamespace(get=lambda *a, **k: _FakeResponse(status=404))
+    assert fetcher.pocs_for_cve("CVE-2026-1234", session) == []
 
 
-def test_location_rank_ma_first():
-    assert fetcher._location_rank(["Boston, MA"]) == 0
-    assert fetcher._location_rank(["Cambridge, Massachusetts"]) == 0
-    assert fetcher._location_rank(["Remote"]) == 1
-    assert fetcher._location_rank(["San Jose, CA"]) == 2
+def test_pocs_for_cve_sorted_and_scheme_checked():
+    repos = [
+        {"html_url": "https://github.com/a/low", "stargazers_count": 1},
+        {"html_url": "javascript:alert(1)", "stargazers_count": 99},
+        {"html_url": "https://github.com/b/high", "stargazers_count": 50},
+    ]
+    session = types.SimpleNamespace(get=lambda *a, **k: _FakeResponse(repos))
+    pocs = fetcher.pocs_for_cve("CVE-2026-1234", session)
+    assert [p["url"] for p in pocs] == ["https://github.com/b/high", "https://github.com/a/low"]
 
 
-def test_location_rank_ma_not_substring():
-    # "ma" must not match inside another token (e.g. Norman, OK).
-    assert fetcher._location_rank(["Norman, OK"]) == 2
+# --- briefing: code-built CTF section --------------------------------------
+def test_assemble_inserts_ctfs_before_quick_hits():
+    ctf = [{"title": "Splice CTF", "start": "2026-12-01T00:00:00+00:00", "url": "https://x"}]
+    ai = "## Top Stories\n- x\n\n## Quick Hits\n- y"
+    out = briefing.assemble_briefing(ai, _data(ctf=ctf))
+    assert out.index(briefing.CTF_HEADING) < out.index(briefing.QUICK_HITS_HEADING)
+    assert "Splice CTF" in out
 
 
-# --- fetcher: new-job flagging --------------------------------------------
-def test_flag_new_jobs_first_run_is_baseline():
-    jobs = [_job("A", "a"), _job("B", "b")]
-    fetcher.flag_new_jobs(jobs, seen=set())
-    assert all(not j["is_new"] for j in jobs)  # nothing "new" on the first ever run
-
-
-def test_flag_new_jobs_detects_new():
-    jobs = [_job("A", "a"), _job("B", "b")]
-    fetcher.flag_new_jobs(jobs, seen={fetcher._job_id(jobs[0])})
-    assert not jobs[0]["is_new"]  # already seen
-    assert jobs[1]["is_new"]  # new since last run
-
-
-def test_merge_jobs_dedups_and_sorts():
-    dup = _job("Dup", "same")
-    ma = _job("MA role", "ma", rank=0)
-    merged = fetcher._merge_jobs([dup, ma], [dict(dup)])  # dup appears twice
-    assert len(merged) == 2  # deduped
-    assert merged[0]["rank"] == 0  # MA sorted first
-
-
-# --- briefing: never drop an internship -----------------------------------
-def test_build_internships_includes_every_posting():
-    jobs = [_job(f"Role {i}", f"link{i}") for i in range(15)]
-    md = briefing.build_internships_markdown(jobs)
-    for j in jobs:
-        assert j["title"] in md
-        assert j["link"] in md
-
-
-def test_new_jobs_get_flag_and_counter():
-    jobs = [_job("Old", "o"), _job("Fresh", "f", is_new=True)]
-    md = briefing.build_internships_markdown(jobs)
-    assert "🆕" in md
-    assert "1 new since yesterday" in md
-
-
-def test_empty_internships_has_friendly_message():
-    md = briefing.build_internships_markdown([])
-    assert "No active security internships" in md
-
-
-# --- briefing: assembly splices code sections, strips model dupes ----------
-def test_assemble_inserts_before_quick_hits_and_keeps_all_jobs():
-    data = {
-        "jobs": [_job("Splice Me", "splice")],
-        "news": [],
-        "cves": [],
-        "kev": [],
-        "ctf": [],
-        "htb": None,
-    }
-    ai = "## 🔥 TOP STORIES\n- x\n\n## 📌 QUICK HITS\n- y"
-    out = briefing.assemble_briefing(ai, data)
-    assert out.index("💼") < out.index("📌 QUICK HITS")  # internships before quick hits
-    assert "Splice Me" in out
-
-
-def test_assemble_strips_model_written_internship_section():
-    data = {"jobs": [_job("Real", "real")], "news": [], "cves": [], "kev": [],
-            "ctf": [], "htb": None}
-    # Model disobeyed and wrote its own (incomplete) internship section.
+def test_assemble_strips_model_written_ctf_section():
     ai = (
-        "## 🔥 TOP STORIES\n- x\n\n"
-        "## 💼 INTERNSHIP OPPORTUNITIES\n- Model's bad list\n\n"
-        "## 📌 QUICK HITS\n- y"
+        "## Top Stories\n- x\n\n"
+        "## Upcoming CTFs\n- Model's made-up CTF\n\n"
+        "## Quick Hits\n- y"
     )
-    out = briefing.assemble_briefing(ai, data)
-    assert "Model's bad list" not in out  # stray section removed
-    assert "Real" in out  # code-built list present
-    assert out.count(briefing.INTERNSHIP_HEADING) == 1  # exactly one, no dupes
+    out = briefing.assemble_briefing(ai, _data())
+    assert "Model's made-up CTF" not in out
+    assert out.count(briefing.CTF_HEADING) == 1
 
 
-def test_htb_token_unwrapping():
-    import base64
-    import json as _json
-
-    jwt = "eyJhbGciOi.eyJzdWIiOiJ.sig"
-    assert fetcher._normalize_htb_token(jwt) == jwt  # clean passes through
-    assert fetcher._normalize_htb_token("Bearer " + jwt) == jwt  # strip prefix
-    assert fetcher._normalize_htb_token(_json.dumps({"token": jwt})) == jwt  # json blob
-    # base64-encoded JSON blob (the localStorage 'identity' case that 401'd)
-    blob = base64.b64encode(_json.dumps({"token": jwt}).encode()).decode()
-    assert fetcher._normalize_htb_token(blob) == jwt
+def test_fallback_lists_news_and_ctfs():
+    news = [{"title": "Big Story", "link": "https://a", "source": "Krebs", "summary": ""}]
+    out = briefing.fallback_markdown(_data(news=news))
+    assert "Big Story" in out and briefing.CTF_HEADING in out
 
 
-def test_poc_note():
-    assert briefing._poc_note([]) == ""
-    assert "public PoC" in briefing._poc_note([{"url": "http://x", "stars": 3}])
+def test_degraded_banner_only_when_no_news():
+    assert briefing.degraded_banner(_data()) != ""
+    assert briefing.degraded_banner(_data(news=[{"title": "x"}])) == ""
 
 
-# --- dashboard -------------------------------------------------------------
-def test_snapshot_counts():
-    data = {
-        "news": [1, 2, 3],
-        "cves": [{"score": 9.0}, {"score": 5.0}],
-        "kev": [{"pocs": [1]}, {"pocs": []}],
-        "jobs": [{"is_new": True, "rank": 0}, {"is_new": False, "rank": 2}],
-        "ctf": [1],
-        "htb": {"points": 42},
-    }
-    s = dashboard.snapshot(data)
-    assert s["news"] == 3 and s["cves"] == 2 and s["high_cves"] == 1
-    assert s["kev"] == 2 and s["kev_poc"] == 1
-    assert s["jobs"] == 2 and s["new_jobs"] == 1 and s["ma_remote_jobs"] == 1
-    assert s["htb_points"] == 42
-
-
-def test_record_snapshot_dedups_same_day(tmp_path):
-    p = tmp_path / "history.json"
-    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": [], "htb": None}
-    dashboard.record_snapshot(data, path=str(p))
-    hist = dashboard.record_snapshot(data, path=str(p))
-    assert len(hist) == 1  # two runs same day -> one entry, not two
-
-
-def test_render_dashboard_is_valid_html(tmp_path):
-    p = tmp_path / "index.html"
-    data = {"news": [1], "cves": [{"score": 9}], "kev": [], "jobs": [], "ctf": [], "htb": None}
-    dashboard.render_dashboard([dashboard.snapshot(data)], data, path=str(p))
-    out = p.read_text()
-    assert out.startswith("<!doctype html>") and out.rstrip().endswith("</html>")
-    assert "<svg" in out
-
-
-# --- security: injection neutralized ---------------------------------------
+# --- security: untrusted input can't inject markup or links ----------------
 def test_strip_html_removes_tags():
     assert "<img" not in fetcher._strip_html("Acme <img src=x onerror=alert(1)> Co")
     assert "script" not in fetcher._strip_html("<script>alert(1)</script>").lower()
@@ -193,14 +127,14 @@ def test_md_escapes_control_chars():
 
 
 def test_safe_url_blocks_non_http():
-    assert briefing._safe_url("javascript:alert(1)") == ""
-    assert briefing._safe_url("data:text/html,x") == ""
-    assert briefing._safe_url("https://ok.com") == "https://ok.com"
+    assert fetcher.safe_url("javascript:alert(1)") == ""
+    assert fetcher.safe_url("data:text/html,x") == ""
+    assert fetcher.safe_url("https://ok.com") == "https://ok.com"
 
 
 def test_safe_url_ignores_whitespace_obfuscation():
-    # Mail clients/browsers ignore whitespace and control chars inside a scheme,
-    # so "java\tscript:" is a live link — it must not slip past the check.
+    # Browsers ignore whitespace and control chars inside a scheme, so
+    # "java\tscript:" is a working link and must be caught.
     assert fetcher.safe_url("java\tscript:alert(1)") == ""
     assert fetcher.safe_url("  javascript:alert(1)") == ""
     assert fetcher.safe_url("JAVASCRIPT:alert(1)") == ""
@@ -216,16 +150,14 @@ def test_feed_links_are_scheme_checked_at_ingest(monkeypatch):
         "summary": "click me",
         "published_parsed": None,
     }
-    feed = type("F", (), {"bozo": False, "entries": [entry], "bozo_exception": None})()
+    feed = types.SimpleNamespace(bozo=False, entries=[entry], bozo_exception=None)
     monkeypatch.setattr(fetcher, "RSS_FEEDS", {"Evil Feed": "https://evil.example/rss"})
     monkeypatch.setattr(fetcher, "_parse_feed", lambda url, timeout=30: feed)
 
     items = fetcher.fetch_rss_feeds()
     assert len(items) == 1
-    assert items[0]["link"] == ""  # dropped, not passed through to the prompt
-    assert "javascript" not in briefing._format_data_for_prompt(
-        {"news": items, "cves": [], "kev": [], "jobs": [], "ctf": []}
-    )
+    assert items[0]["link"] == ""
+    assert "javascript" not in briefing._format_data_for_prompt(_data(news=items))
 
 
 def test_ctf_url_falls_back_when_primary_is_unsafe():
@@ -235,11 +167,19 @@ def test_ctf_url_falls_back_when_primary_is_unsafe():
     assert parsed[0]["url"] == "https://ctftime.org/event/1"
 
 
-# --- security: the model's own links are sanitized before sending -----------
+def test_hostile_ctf_title_cannot_forge_link_or_markup():
+    import markdown as mdlib
+
+    evil = [{"title": "Nice <img src=x> [phish](http://evil)", "start": "",
+             "url": "https://real"}]
+    html = mdlib.markdown(briefing.build_ctf_markdown(evil), extensions=["extra"])
+    assert "<img" not in html
+    assert 'href="http://evil"' not in html
+    assert 'href="https://real"' in html
+
+
 def test_render_html_neutralizes_model_written_dangerous_links():
-    """The model is told to 'use the provided links' and could echo/invent any
-    URL; its Markdown is converted to HTML and emailed, so check the output."""
-    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": []}
+    """The model writes its own links, so the rendered HTML is checked too."""
     for bad in (
         "javascript:alert(1)",
         "JaVaScRiPt:alert(1)",
@@ -247,30 +187,23 @@ def test_render_html_neutralizes_model_written_dangerous_links():
         "&#106;avascript:alert(1)",
         "data:text/html,x",
     ):
-        out = briefing.render_html(f"[click]({bad})", data, "today")
+        out = briefing.render_html(f"[click]({bad})", _data(), "today")
         assert "javascript" not in out.lower(), bad
         assert "data:text/html" not in out, bad
-        assert 'href="#"' in out, bad  # neutralized, link text still readable
+        assert 'href="#"' in out, bad
 
 
 def test_render_html_preserves_legitimate_links():
-    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": []}
-    out = briefing.render_html("[ok](https://nvd.nist.gov/a?b=1&c=2)", data, "today")
+    out = briefing.render_html("[ok](https://nvd.nist.gov/a?b=1&c=2)", _data(), "today")
     assert 'href="https://nvd.nist.gov/a?b=1&amp;c=2"' in out
 
 
-# --- briefing: an empty model response must fail loudly, not obscurely ------
+# --- briefing: model failures surface clearly ------------------------------
 def test_summarize_raises_clear_error_on_empty_response(monkeypatch):
-    """Gemini returns a null message when it stops before emitting text (thinking
-    tokens exhausting max_tokens, or a safety block). That must surface as a
-    readable error carrying finish_reason — not an AttributeError on None."""
-    import types
-
-    class _Msg:
-        content = None
+    """An empty Gemini message must raise a readable error, not AttributeError."""
 
     class _Choice:
-        message = _Msg()
+        message = types.SimpleNamespace(content=None)
         finish_reason = "length"
 
     class _Client:
@@ -284,41 +217,15 @@ def test_summarize_raises_clear_error_on_empty_response(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setattr(briefing, "OpenAI", _Client)
 
-    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": []}
     try:
-        briefing.summarize(data)
+        briefing.summarize(_data())
     except RuntimeError as exc:
         assert "finish_reason" in str(exc) and "length" in str(exc)
     else:
         raise AssertionError("expected RuntimeError for an empty model response")
 
 
-def test_hostile_job_cannot_forge_link_or_markup():
-    import markdown as mdlib
-
-    evil = _job("Nice <img src=x onerror=alert(1)> [phish](http://evil)", "https://real")
-    html = mdlib.markdown(briefing.build_internships_markdown([evil]), extensions=["extra"])
-    assert "<img" not in html  # no live tag — angle brackets escaped by _md
-    assert 'href="http://evil"' not in html  # forged link neutralized by _md
-    assert 'href="https://real"' in html  # the legitimate link still works
-
-
-# --- briefing: HTB section only when data present -------------------------
-def test_htb_section_empty_without_data():
-    assert briefing.build_htb_markdown(None) == ""
-
-
 def test_failure_email_no_crash_without_env(monkeypatch):
-    # Must degrade gracefully (log + return), never raise, when creds are absent.
     for var in ("EMAIL_SENDER", "EMAIL_RECIPIENT", "EMAIL_PASSWORD"):
         monkeypatch.delenv(var, raising=False)
-    briefing.send_failure_email("boom")  # should not raise
-
-
-def test_htb_section_rendered():
-    md = briefing.build_htb_markdown(
-        {"name": "andyExel", "rank": "Hacker", "points": 42, "user_owns": 3}
-    )
-    assert "andyExel" in md
-    assert "Hacker" in md
-    assert "42 pts" in md and "3 user owns" in md
+    briefing.send_failure_email("boom")  # should log and return, not raise
