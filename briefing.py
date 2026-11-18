@@ -1,562 +1,128 @@
 """
-briefing.py — turn fetched data into an AI-summarized, dark-themed email.
+briefing.py: entry point. Runs the whole pipeline once.
 
-Flow:
-  1. fetcher.fetch_all()  ->  raw news / CVEs / jobs
-  2. Google Gemini summarizes it for the recipient
-  3. Render dark HTML + plain-text email and send via Gmail SMTP (SSL, 465)
+    fetch -> curate -> drop already sent -> pick (Gemini, or coverage ranking
+    if it fails) -> render -> send -> save state
 
-Designed to be resilient: if the AI call fails we still send a plain briefing
-built directly from the fetched data so the run is never silently lost.
+    python briefing.py            send the email, then record what was sent
+    python briefing.py --dry-run  write preview.html / preview.txt instead;
+                                  sends nothing and records nothing
+
+If anything crashes, a plain-text failure alert is emailed and the process
+exits non-zero, so the workflow's "open an issue" step also fires.
 """
 
-import html as html_lib
+import argparse
 import logging
 import os
-import re
 import smtplib
 import ssl
 import sys
 import traceback
-from datetime import datetime, timezone
+from datetime import date, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-import markdown as md
-from dateutil import parser as dateparser
-from openai import OpenAI
-
-import dashboard
+import curate
+import editor
 import fetcher
+import hackathons
+import render
+import state
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("briefing")
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-# Google Gemini via its OpenAI-compatible endpoint. (GitHub Models, the previous
-# backend, was permanently retired by GitHub on 2026-07-30.) Gemini's free tier is
-# generous and the flash models have a 1M-token context, so we can send every CVE
-# without trimming — the point being to never miss anything.
-#
-# Use the "-latest" alias rather than a pinned version: Google retires specific
-# model versions for new API keys over time (a pinned gemini-2.5-flash 404s on a
-# fresh key), so the alias keeps this working without periodic code changes.
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/"
-MODEL = "gemini-flash-latest"
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
 
-RECIPIENT_CONTEXT = """\
-The recipient is:
-- A UMass Amherst cybersecurity student.
-- Actively working through the HackTheBox Web Hacking path.
-- Currently on the Web Proxies module (Burp Suite, HTTP interception, request
-  manipulation).
-- Actively looking for penetration testing internships.
-Tailor tone and relevance to this person. Explain *why* items matter to them.
-"""
-
-SYSTEM_PROMPT = """\
-You are a sharp cybersecurity news editor writing a thorough daily briefing for a
-specific student. Be concrete. Add a short description to every item so the reader
-understands it, but DO NOT DROP ITEMS to save space — completeness matters more
-than brevity here. The reader would rather scroll than miss something. No invented
-facts — only summarize what you are given. Use the provided links. Write in Markdown.
-"""
-
-# The exact section layout the user asked for.
-OUTPUT_INSTRUCTIONS = """\
-Produce the briefing using EXACTLY these Markdown sections, in this order. Use
-`##` headings with the emoji shown. Omit a section only if you truly have nothing
-for it, and if so say "Nothing notable today."
-
-Overall rule: BE COMPLETE. Include every relevant item you are given rather than a
-"best of" subset, and give each a short description. Long is fine.
-
-## 🔥 TOP STORIES
-Cover ALL the notable news items, not just a few. For each: a bold headline linked
-to the source, then one or two sentences on what happened and why it matters to a
-security student. It's fine for this to be a long list.
-
-## 🚨 CVEs TO KNOW
-Include every CVSS 7.0+ or web-security-relevant CVE you are given. For each:
-`**CVE-ID** (CVSS x.x — Severity)` linked to NVD, then a one-line plain-English
-description and, where it applies, why it's relevant to web hacking. **Lead with
-any CVEs from the CISA KEV list — those are confirmed actively exploited in the
-wild — and mark them `🔴 Actively exploited` (note if there's known ransomware
-use).** If a CVE line says a public PoC exists, add `🧪 PoC available` and keep
-the PoC link — knowing what's weaponized is exactly how a pentester triages.
-
-## 🎯 RELEVANT TO YOUR HTB PATH
-Anything useful for web hacking, HTTP proxies, Burp Suite, or OWASP — tie it to
-the Web Proxies module they're on. Include HackTheBox news/announcements here too.
-
-DO NOT WRITE any of these sections — they are generated automatically from live
-data and inserted for you, and writing them yourself risks dropping or garbling
-entries: `## 🏆 YOUR HACKTHEBOX PROGRESS`, `## 🎓 UPCOMING CTFs`,
-`## 💼 INTERNSHIP OPPORTUNITIES`. After the HTB PATH section, skip straight to
-QUICK HITS; everything above will be inserted between them.
-
-## 📌 QUICK HITS
-Short one-line bullets for any other notable items that didn't fit above.
-"""
-
-# We build the 💼 INTERNSHIP OPPORTUNITIES section in code (not via the model) so
-# that EVERY posting is guaranteed to appear — the model was silently dropping
-# some. This heading must match what we splice against in assemble_briefing().
-INTERNSHIP_HEADING = "## 💼 INTERNSHIP OPPORTUNITIES"
-QUICK_HITS_HEADING = "## 📌 QUICK HITS"
+# Without Gemini there is no judgment of importance, so the fallback shows a
+# fixed number per section.
+STORIES_PER_SECTION = {"cyber": 6, "ai": 6, "papers": 3}
+PREVIEW_HTML = "preview.html"
+PREVIEW_TEXT = "preview.txt"
 
 
-def _md(text):
-    """Escape Markdown-control characters in untrusted text.
+# ---------------------------------------------------------------------------
+# Building the briefing
+# ---------------------------------------------------------------------------
+def pick_stories(stories, per_section=None):
+    """The top of each section in incoming order: coverage for news, upvotes
+    for papers. The fallback when Gemini is unavailable (no project idea)."""
+    per_section = per_section or STORIES_PER_SECTION
+    return {
+        category: [s for s in stories if s["category"] == category][:limit]
+        for category, limit in per_section.items()
+    }
 
-    Second layer of defense (HTML tags are already stripped in fetcher): stops a
-    feed/job/CTF title containing `[x](y)` or `*` from forging links, adding
-    emphasis, or breaking the layout of a code-built section.
+
+def build(today=None):
+    """Fetch everything and assemble today's briefing. Sends nothing.
+
+    Returns (briefing, keys, sent): the dict render.py draws, the sent-log keys
+    for everything in it, and the sent log as loaded.
     """
-    if not text:
-        return ""
-    out = str(text)
-    for ch in ("\\", "`", "*", "_", "[", "]", "<", ">"):
-        out = out.replace(ch, "\\" + ch)
-    return out
+    today = today or date.today()
+    fetcher.reset_status()
 
+    data = fetcher.fetch_all()
+    raw_hackathons = hackathons.fetch_hackathons()
+    sent = state.load_sent()
 
-# Allow only http(s) URLs — blocks javascript:/data: link injection. The canonical
-# implementation lives in fetcher (where it is also applied at ingest) so there is
-# exactly one scheme allowlist to reason about.
-_safe_url = fetcher.safe_url
+    curated = curate.curate(data["news"], data["kev"]) + curate.curate_papers(data["papers"])
+    stories = state.filter_unsent(curated, sent)
+    # Gemini picks if it can; otherwise coverage ranking. Never raises.
+    picks = editor.edit(stories) or pick_stories(stories)
+    chosen_hackathons = hackathons.select(raw_hackathons, sent, today)
+
+    briefing = {
+        "cyber": picks.get("cyber", []),
+        "ai": picks.get("ai", []),
+        "papers": picks.get("papers", []),
+        "project": picks.get("project"),
+        "edited": "model" in picks,
+        "model": picks.get("model", ""),
+        "hackathons": chosen_hackathons,
+        "ctf": data["ctf"],
+        "status": dict(fetcher.source_status),
+        "degraded": not data["news"],
+    }
+
+    # Only what is actually shown gets marked as sent. A story that didn't
+    # make the cut today can still show up tomorrow.
+    keys = set()
+    for story in briefing["cyber"] + briefing["ai"] + briefing["papers"]:
+        keys |= state.story_keys(story)
+    for h in chosen_hackathons["nearby"] + chosen_hackathons["online"]:
+        keys |= hackathons.hackathon_keys(h)
+    return briefing, keys, sent
 
 
 # ---------------------------------------------------------------------------
-# Prompt construction
+# Email
 # ---------------------------------------------------------------------------
-# With Gemini's 1M-token context we send everything (all CVEs + news). The internship
-# list is built in code (not sent to the model). Order is still deliberate: KEV
-# first (small, must-keep), news next, CVEs LAST since CVEs are the only unbounded
-# section. MAX_PROMPT_CHARS is now just a generous safety net (~50k chars ≈ 12k
-# tokens, far under the context limit) so a pathological day can't send a megabyte.
-PROMPT_NEWS_CAP = 60
-PROMPT_CVES_CAP = 40
-MAX_PROMPT_CHARS = 50000
-
-
-def _poc_note(pocs):
-    """Short ' [PoC: url]' note for the prompt when a public exploit exists."""
-    if not pocs:
-        return ""
-    top = pocs[0]
-    return f" [🧪 public PoC exists: {top['url']}]"
-
-
-def _format_data_for_prompt(data):
-    # NOTE: internships are intentionally NOT included here — that section is
-    # built deterministically in build_internships_markdown() and spliced in
-    # afterward, so the model never has the chance to drop a posting.
-    lines = []
-
-    # KEV first — small, must-keep, and never trimmed.
-    lines.append("=== ACTIVELY EXPLOITED (CISA KEV, recently added) ===")
-    if data.get("kev"):
-        for k in data["kev"]:
-            ransom = (
-                " [known ransomware use]"
-                if str(k.get("ransomware", "")).lower() == "known"
-                else ""
-            )
-            poc = _poc_note(k.get("pocs"))
-            lines.append(
-                f"- {k['id']} — {k['vendor']} {k['product']}: {k['name']}"
-                f" (added {k['date_added']}){ransom}{poc} {k['link']}"
-            )
-            if k["description"]:
-                lines.append(f"  {k['description'][:220]}")
-    else:
-        lines.append("(no recently added KEV entries)")
-
-    lines.append("\n=== NEWS (RSS, last 24h) ===")
-    if data["news"]:
-        for item in data["news"][:PROMPT_NEWS_CAP]:
-            lines.append(f"- [{item['source']}] {item['title']}")
-            if item["link"]:
-                lines.append(f"  link: {item['link']}")
-            if item["summary"]:
-                lines.append(f"  summary: {item['summary'][:220]}")
-    else:
-        lines.append("(no news fetched)")
-
-    # CVEs last: the only unbounded section, so it absorbs any truncation.
-    lines.append("\n=== CVEs (NVD, last 24h — sorted by CVSS, highest first) ===")
-    if data["cves"]:
-        for c in data["cves"][:PROMPT_CVES_CAP]:
-            score = f"{c['score']:.1f}" if c["score"] else "N/A"
-            poc = _poc_note(c.get("pocs"))
-            lines.append(f"- {c['id']} (CVSS {score} {c['severity']}){poc} {c['link']}")
-            if c["description"]:
-                lines.append(f"  {c['description'][:220]}")
-    else:
-        lines.append("(no CVEs fetched)")
-
-    block = "\n".join(lines)
-    if len(block) > MAX_PROMPT_CHARS:
-        logger.warning(
-            "Prompt data %d chars — trimming trailing CVEs to %d to fit the token "
-            "limit; KEV and news come first and are kept (internships are built "
-            "separately in code and unaffected)",
-            len(block),
-            MAX_PROMPT_CHARS,
-        )
-        block = block[:MAX_PROMPT_CHARS] + "\n…(remaining lower-priority items omitted)"
-    return block
-
-
-def summarize(data):
-    """Call Google Gemini to produce the Markdown briefing. Returns Markdown str."""
-    token = os.environ.get("GEMINI_API_KEY")
-    if not token:
-        raise RuntimeError("GEMINI_API_KEY is not set")
-
-    client = OpenAI(base_url=GEMINI_ENDPOINT, api_key=token)
-    user_content = (
-        RECIPIENT_CONTEXT
-        + "\n"
-        + OUTPUT_INSTRUCTIONS
-        + "\n\nHere is today's fetched data:\n\n"
-        + _format_data_for_prompt(data)
+def _email_creds():
+    return (
+        os.environ.get("EMAIL_SENDER"),
+        os.environ.get("EMAIL_RECIPIENT"),
+        os.environ.get("EMAIL_PASSWORD"),
     )
 
-    logger.info("Requesting summary from %s…", MODEL)
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        temperature=0.4,
-        # Gemini's flash models "think" by default, and those hidden reasoning
-        # tokens count against max_tokens. Left unchecked they eat most of the
-        # budget, so the briefing is truncated mid-way and the CVE section — which
-        # the model writes LAST — disappears entirely. This is summarization, not a
-        # reasoning task, so keep thinking minimal and hand the budget to output.
-        reasoning_effort="low",
-        # Generous output budget so a complete, item-by-item briefing (every
-        # notable story, every CVE) isn't cut off mid-list. A full day is ~6.5k
-        # output tokens; this leaves headroom (and covers a busier day, or a model
-        # that ignores reasoning_effort and still spends some thinking tokens).
-        max_tokens=12000,
-    )
-    choice = response.choices[0]
-    content = (choice.message.content or "").strip()
-    if not content:
-        # Gemini returns a null/empty message when the candidate stops before
-        # emitting any text — usually finish_reason "length" (thinking tokens ate
-        # the whole budget, cf. reasoning_effort above) or a safety block. Raise
-        # with the reason attached so the log says *why* we fell back, instead of
-        # an opaque AttributeError on None.
-        raise RuntimeError(
-            "model returned an empty response "
-            f"(finish_reason={getattr(choice, 'finish_reason', None)!r})"
-        )
-    logger.info("Received %d chars of summary", len(content))
-    return content
+
+def _smtp_send(message, sender, recipient, password):
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=60) as server:
+        server.login(sender, password)
+        server.sendmail(sender, recipient, message.as_string())
 
 
-def build_internships_markdown(jobs):
-    """Deterministically render the 💼 section with EVERY posting and its details.
-
-    Built in code rather than by the model so no posting can be dropped. Each
-    entry includes company, all locations, term, category, degrees, and a visa
-    note where relevant.
-    """
-    lines = [INTERNSHIP_HEADING]
-    if not jobs:
-        lines.append(
-            "No active security internships in the tracked lists today — "
-            "check again tomorrow (the next hiring cycle ramps up in the fall)."
-        )
-        return "\n".join(lines)
-
-    new_count = sum(1 for j in jobs if j.get("is_new"))
-    summary = f"*{len(jobs)} active security internship(s) — Massachusetts and remote first."
-    if new_count:
-        summary += f" **🆕 {new_count} new since yesterday (apply to these first).**"
-    lines.append(summary + "*")
-    lines.append("")
-
-    # New postings first within the already MA/remote-sorted list.
-    ordered = sorted(jobs, key=lambda j: not j.get("is_new"))
-    for j in ordered:
-        flag = "🆕 " if j.get("is_new") else ""
-        name = _md(j["title"])
-        link = _safe_url(j.get("link"))
-        title = f"**[{name}]({link})**" if link else f"**{name}**"
-        lead = f"{flag}{title} — {_md(j['company'])}" if j.get("company") else f"{flag}{title}"
-        lines.append(f"- {lead}")
-
-        # Detail line: location · term · category · degrees.
-        details = [f"📍 {_md(j['location_str'])}"]
-        if j.get("term"):
-            details.append(_md(j["term"]))
-        if j.get("category"):
-            details.append(_md(j["category"]))
-        degrees = j.get("degrees") or []
-        if degrees:
-            details.append(_md("/".join(degrees)))
-        lines.append(f"  <br>{' · '.join(details)}")
-
-        # Visa/citizenship flag — matters a lot for internship eligibility.
-        sponsorship = (j.get("sponsorship") or "").lower()
-        if "citizen" in sponsorship or "does not offer" in sponsorship:
-            lines.append(f"  <br>⚠️ {_md(j['sponsorship'])}")
-    return "\n".join(lines)
-
-
-def build_ctf_markdown(events):
-    """Deterministic 🎓 section: upcoming CTF competitions from CTFtime."""
-    lines = ["## 🎓 UPCOMING CTFs"]
-    if not events:
-        lines.append("No upcoming events found (or CTFtime was unreachable).")
-        return "\n".join(lines)
-    lines.append("*Great practice and résumé fodder for security roles.*")
-    lines.append("")
-    now = datetime.now(timezone.utc)
-    for e in events:
-        when, rel = e["start"][:10], ""
-        try:
-            start = dateparser.parse(e["start"])
-            days = (start - now).days
-            rel = " (today)" if days == 0 else f" (in {days}d)" if days > 0 else ""
-            when = start.strftime("%a %b %d")
-        except (ValueError, TypeError):
-            pass
-        place = "🌐 Online" if not e.get("onsite") else f"📍 {_md(e.get('location', 'On-site'))}"
-        fmt = f" · {_md(e['format'])}" if e.get("format") else ""
-        name = _md(e["title"])
-        url = _safe_url(e.get("url"))
-        title = f"**[{name}]({url})**" if url else f"**{name}**"
-        lines.append(f"- {title} — {when}{rel} · {place}{fmt}")
-    return "\n".join(lines)
-
-
-def build_htb_markdown(htb):
-    """Deterministic 🏆 section: the recipient's HackTheBox labs stats (if any)."""
-    if not htb:
-        return ""
-    lines = ["## 🏆 YOUR HACKTHEBOX PROGRESS"]
-    name = _md(htb.get("name")) or "You"
-    rank = _md(htb.get("rank")) or "—"
-    lines.append(f"**{name}** · Rank: **{rank}**")
-
-    stats = []
-    if htb.get("points"):
-        stats.append(f"{htb['points']} pts")
-    if htb.get("ranking"):
-        stats.append(f"global #{htb['ranking']}")
-    if htb.get("user_owns"):
-        stats.append(f"{htb['user_owns']} user owns")
-    if htb.get("system_owns"):
-        stats.append(f"{htb['system_owns']} system owns")
-    if htb.get("respects"):
-        stats.append(f"{htb['respects']} respects")
-    if stats:
-        lines.append(f"  <br>{' · '.join(stats)}")
-
-    lines.append("  <br>*Keep the streak going — one box a day compounds fast.*")
-    return "\n".join(lines)
-
-
-def assemble_briefing(ai_markdown, data):
-    """Splice all code-built sections into the model's briefing.
-
-    The model writes only the narrative sections (Top Stories, CVEs, HTB Path,
-    Quick Hits). Everything that must be complete/accurate — HTB progress, skill
-    labs, CTFs, and the full internship list — is built here and inserted just
-    before QUICK HITS, so the model can never drop or garble it.
-    """
-    md = ai_markdown
-
-    # Defensive: strip any of our sections the model wrote anyway (avoid dupes).
-    for heading in (INTERNSHIP_HEADING, "## 🏆", "## 🎓"):
-        while heading in md:
-            start = md.index(heading)
-            after = md.find("\n## ", start + 1)
-            md = md[:start] + (md[after + 1 :] if after != -1 else "")
-
-    # Order: personal progress, then opportunities.
-    sections = [
-        build_htb_markdown(data.get("htb")),
-        build_ctf_markdown(data.get("ctf", [])),
-        build_internships_markdown(data["jobs"]),
-    ]
-    block = "\n\n".join(s for s in sections if s)
-
-    if QUICK_HITS_HEADING in md:
-        idx = md.index(QUICK_HITS_HEADING)
-        return md[:idx].rstrip() + "\n\n" + block + "\n\n" + md[idx:]
-    return md.rstrip() + "\n\n" + block + "\n"
-
-
-def fallback_markdown(data):
-    """Build a plain briefing from raw data when the AI call fails."""
-    lines = ["## ⚠️ AI summarization unavailable", "", "Raw fetched data below.", ""]
-
-    lines.append("## 🔥 TOP STORIES")
-    for item in data["news"][:15]:
-        lines.append(
-            f"- **[{_md(item['title'])}]({_safe_url(item['link'])})** — {item['source']}"
-        )
-    if not data["news"]:
-        lines.append("Nothing fetched today.")
-
-    lines.append("\n## 🚨 CVEs TO KNOW")
-    for k in data.get("kev", []):
-        poc = " · 🧪 PoC" if k.get("pocs") else ""
-        lines.append(
-            f"- 🔴 **[{_md(k['id'])}]({_safe_url(k['link'])})** actively exploited — "
-            f"{_md(k['vendor'])} {_md(k['product'])}: {_md(k['name'])}{poc}"
-        )
-    for c in data["cves"][:20]:
-        score = f"{c['score']:.1f}" if c["score"] else "N/A"
-        poc = " · 🧪 PoC" if c.get("pocs") else ""
-        lines.append(
-            f"- **[{_md(c['id'])}]({_safe_url(c['link'])})** "
-            f"(CVSS {score} {_md(c['severity'])}){poc}"
-        )
-    if not data["cves"] and not data.get("kev"):
-        lines.append("Nothing fetched today.")
-
-    # Reuse the same deterministic builders so the fallback is just as complete.
-    for section in (
-        build_htb_markdown(data.get("htb")),
-        build_ctf_markdown(data.get("ctf", [])),
-        build_internships_markdown(data["jobs"]),
-    ):
-        if section:
-            lines.append("")
-            lines.append(section)
-
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Email rendering
-# ---------------------------------------------------------------------------
-HTML_TEMPLATE = """\
-<!-- dark themed briefing -->
-<div style="margin:0;padding:0;background-color:#0d1117;">
-  <div style="max-width:680px;margin:0 auto;padding:24px 20px;
-              font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
-              color:#c9d1d9;background-color:#0d1117;">
-    <div style="border-bottom:1px solid #21262d;padding-bottom:16px;margin-bottom:8px;">
-      <div style="font-size:20px;font-weight:bold;color:#58a6ff;letter-spacing:0.5px;">
-        &#128272; CYBER BRIEFING
-      </div>
-      <div style="font-size:13px;color:#8b949e;margin-top:4px;">{date_str}</div>
-    </div>
-    <div class="briefing-body" style="font-size:14px;line-height:1.6;">
-      {body}
-    </div>
-    <div style="border-top:1px solid #21262d;margin-top:28px;padding-top:14px;
-                font-size:11px;color:#6e7681;">
-      Auto-generated by your Morning Briefing bot · GitHub Actions + Google Gemini
-      · {news} news / {cves} CVEs / {kev} KEV / {jobs} internships / {ctf} CTFs
-    </div>
-  </div>
-</div>
-"""
-
-# Inline-ish styling for the AI's Markdown-converted HTML. Gmail honors a <style>
-# block in the head; we also lean on the container color above for fallbacks.
-EMAIL_STYLES = """\
-<style>
-  .briefing-body h2 {
-    color:#58a6ff; font-size:16px; margin:26px 0 10px 0;
-    padding-bottom:6px; border-bottom:1px solid #21262d;
-  }
-  .briefing-body a { color:#79c0ff; text-decoration:none; }
-  .briefing-body a:hover { text-decoration:underline; }
-  .briefing-body strong { color:#e6edf3; }
-  .briefing-body code {
-    background:#161b22; color:#ff7b72; padding:1px 5px;
-    border-radius:4px; font-size:13px;
-  }
-  .briefing-body ul { padding-left:20px; margin:8px 0; }
-  .briefing-body li { margin:6px 0; }
-  .briefing-body p { margin:8px 0; }
-</style>
-"""
-
-
-# Matches the href of an anchor in Markdown-rendered HTML (python-markdown always
-# emits double-quoted attributes).
-_HREF_RE = re.compile(r'(<a\s[^>]*?href=")([^"]*)(")', re.IGNORECASE)
-
-
-def sanitize_html_links(html_text):
-    """Neutralize any non-http(s) href in the rendered briefing HTML.
-
-    Feed/job/CTF/PoC URLs are already scheme-checked at ingest (fetcher.safe_url),
-    but the model writes the narrative sections itself and is told to "use the
-    provided links" — so it can echo, mangle, or invent a URL, and its Markdown
-    goes straight into an HTML email. This is the last checkpoint before sending.
-
-    The href is HTML-unescaped and stripped of whitespace/control characters
-    before the check, because `&#106;avascript:` and `java\\tscript:` both render
-    as live links in mail clients. Safe hrefs are passed through byte-for-byte so
-    legitimate escaping (`&amp;` in a query string) survives.
-    """
-
-    def _neutralize(match):
-        url = re.sub(r"[\s\x00-\x1f\x7f]+", "", html_lib.unescape(match.group(2)))
-        if url.lower().startswith(("http://", "https://")):
-            return match.group(0)
-        logger.warning("Stripped non-http(s) link from briefing: %.80r", match.group(2))
-        return match.group(1) + "#" + match.group(3)
-
-    return _HREF_RE.sub(_neutralize, html_text)
-
-
-def render_html(markdown_text, data, date_str):
-    body_html = sanitize_html_links(
-        md.markdown(markdown_text, extensions=["extra", "sane_lists"])
-    )
-    inner = HTML_TEMPLATE.format(
-        date_str=date_str,
-        body=body_html,
-        news=len(data["news"]),
-        cves=len(data["cves"]),
-        kev=len(data.get("kev", [])),
-        jobs=len(data["jobs"]),
-        ctf=len(data.get("ctf", [])),
-    )
-    return EMAIL_STYLES + inner
-
-
-def render_plain_text(markdown_text, date_str):
-    header = f"CYBER BRIEFING — {date_str}\n{'=' * 40}\n\n"
-    return header + markdown_text
-
-
-# ---------------------------------------------------------------------------
-# Email sending
-# ---------------------------------------------------------------------------
 def send_email(subject, html_body, text_body):
-    sender = os.environ.get("EMAIL_SENDER")
-    recipient = os.environ.get("EMAIL_RECIPIENT")
-    password = os.environ.get("EMAIL_PASSWORD")
-
+    sender, recipient, password = _email_creds()
     missing = [
         name
-        for name, val in (
-            ("EMAIL_SENDER", sender),
-            ("EMAIL_RECIPIENT", recipient),
-            ("EMAIL_PASSWORD", password),
+        for name, value in zip(
+            ("EMAIL_SENDER", "EMAIL_RECIPIENT", "EMAIL_PASSWORD"), (sender, recipient, password)
         )
-        if not val
+        if not value
     ]
     if missing:
         raise RuntimeError(f"Missing email env var(s): {', '.join(missing)}")
@@ -565,46 +131,38 @@ def send_email(subject, html_body, text_body):
     message["Subject"] = subject
     message["From"] = sender
     message["To"] = recipient
-    # Order matters: last part is the preferred one (HTML).
+    # Mail clients show the last part they support, so HTML goes last.
     message.attach(MIMEText(text_body, "plain", "utf-8"))
     message.attach(MIMEText(html_body, "html", "utf-8"))
 
-    logger.info("Sending email to %s…", recipient)
-    context = ssl.create_default_context()
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
-        server.login(sender, password)
-        server.sendmail(sender, recipient, message.as_string())
+    logger.info("Sending email…")
+    _smtp_send(message, sender, recipient, password)
     logger.info("Email sent.")
 
 
 def send_failure_email(error_text):
-    """Best-effort plain-text alert so a failed run is never silent.
+    """Best-effort alert when the run crashes.
 
-    If the failure is SMTP itself, this can't deliver — the workflow's
-    issue-on-failure step is the backstop for that case.
+    Can't help if SMTP itself is the problem. The workflow's open-an-issue step
+    covers that case.
     """
-    sender = os.environ.get("EMAIL_SENDER")
-    recipient = os.environ.get("EMAIL_RECIPIENT")
-    password = os.environ.get("EMAIL_PASSWORD")
+    sender, recipient, password = _email_creds()
     if not (sender and recipient and password):
-        logger.error("Cannot send failure alert — email env vars missing.")
+        logger.error("Cannot send failure alert: email env vars missing.")
         return
 
     when = datetime.now().strftime("%A, %B %d, %Y at %H:%M")
-    body = (
-        f"Your morning cyber briefing FAILED to generate on {when}.\n\n"
-        f"Error:\n{error_text}\n\n"
-        "Check the GitHub Actions run logs for the full traceback."
+    message = MIMEText(
+        f"The morning briefing failed on {when}.\n\nError:\n{error_text}\n\n"
+        "Check the GitHub Actions run logs for the full traceback.",
+        "plain",
+        "utf-8",
     )
-    message = MIMEText(body, "plain", "utf-8")
-    message["Subject"] = "⚠️ Cyber Briefing FAILED"
+    message["Subject"] = "Morning Briefing FAILED"
     message["From"] = sender
     message["To"] = recipient
     try:
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
-            server.login(sender, password)
-            server.sendmail(sender, recipient, message.as_string())
+        _smtp_send(message, sender, recipient, password)
         logger.info("Failure alert email sent.")
     except Exception as exc:  # noqa: BLE001
         logger.error("Could not send failure alert email: %s", exc)
@@ -613,51 +171,37 @@ def send_failure_email(error_text):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def degraded_banner(data):
-    """A visible warning if the run looks degraded (major sources all empty).
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Build and send the morning briefing.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=f"write {PREVIEW_HTML} and {PREVIEW_TEXT} instead of sending; record nothing",
+    )
+    args = parser.parse_args(argv)
 
-    NVD normally returns CVEs every day and at least one news feed works, so both
-    being empty signals a widespread fetch failure rather than a quiet news day.
-    """
-    if not data.get("news") and not data.get("cves"):
-        logger.warning("Degraded run — 0 news and 0 CVEs (likely widespread fetch failure)")
-        return (
-            "> ⚠️ **Heads up:** no news *and* no CVEs were fetched today — this "
-            "usually means several sources failed, not a quiet day. Check the "
-            "GitHub Actions logs.\n\n"
-        )
-    return ""
+    today = date.today()
+    briefing, keys, sent = build(today)
+    subject, html_body, text_body = render.render(briefing, today)
 
-
-def main():
-    data = fetcher.fetch_all()
-
-    try:
-        ai_markdown = summarize(data)
-        # Internship section is built in code and spliced in — guarantees every
-        # posting appears regardless of what the model chose to include.
-        markdown_text = assemble_briefing(ai_markdown, data)
-    except Exception as exc:  # noqa: BLE001 — still send *something* useful
-        logger.error("AI summarization failed (%s); using fallback briefing.", exc)
-        markdown_text = fallback_markdown(data)
-
-    markdown_text = degraded_banner(data) + markdown_text
-
-    now = datetime.now()
-    date_str = now.strftime("%A, %B %d, %Y")
-    subject = f"🔐 Cyber Briefing — {date_str}"
-
-    html_body = render_html(markdown_text, data, date_str)
-    text_body = render_plain_text(markdown_text, date_str)
+    if args.dry_run:
+        with open(PREVIEW_HTML, "w", encoding="utf-8") as f:
+            f.write(html_body)
+        with open(PREVIEW_TEXT, "w", encoding="utf-8") as f:
+            f.write(text_body)
+        logger.info("Dry run: wrote %s and %s. Nothing sent or recorded.",
+                    PREVIEW_HTML, PREVIEW_TEXT)
+        return
 
     send_email(subject, html_body, text_body)
-
-    # Update the public dashboard after the email is safely out (never blocks it).
-    dashboard.update(data)
+    # Saved only after a successful send. If the send fails, these stories
+    # must not be marked as seen, or tomorrow's run would skip them too.
+    state.save_sent(state.mark_sent(sent, keys, today), today=today)
     logger.info("Done.")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     try:
         main()
     except Exception as exc:  # noqa: BLE001

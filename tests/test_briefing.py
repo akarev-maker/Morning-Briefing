@@ -1,324 +1,139 @@
-"""Network-free unit tests for the briefing's deterministic logic.
+"""End-to-end tests of briefing.py with every outside call faked.
 
-These cover the parts that must never silently break — new-job flagging, the
-"never drop an internship" guarantee, section assembly, and relevance filters.
-Run with: pytest
+Each test runs in its own temp directory (monkeypatch.chdir), so the real
+state/sent.json and preview files are never touched.
 """
 
 import sys
 from pathlib import Path
 
-# Make the top-level modules importable when pytest runs from the repo root.
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import briefing  # noqa: E402
-import dashboard  # noqa: E402
 import fetcher  # noqa: E402
-
-
-def _job(title, link, rank=2, is_new=False, company="Acme", term="Summer 2026"):
-    # Wrap bare identifiers into real URLs (the code correctly drops non-http links).
-    if not link.startswith("http"):
-        link = f"https://example.com/{link}"
-    return {
-        "title": title,
-        "link": link,
-        "company": company,
-        "locations": ["Boston, MA"] if rank == 0 else ["Remote"],
-        "location_str": "Boston, MA" if rank == 0 else "Remote",
-        "term": term,
-        "category": "Security",
-        "sponsorship": "",
-        "degrees": [],
-        "date_posted": 0,
-        "rank": rank,
-        "is_new": is_new,
-    }
-
-
-# --- fetcher: relevance + ranking -----------------------------------------
-def test_is_security_role():
-    assert fetcher._is_security_role("Penetration Testing Intern")
-    assert fetcher._is_security_role("Cybersecurity Analyst Intern")
-    assert not fetcher._is_security_role("Frontend Developer Intern")
-
-
-def test_location_rank_ma_first():
-    assert fetcher._location_rank(["Boston, MA"]) == 0
-    assert fetcher._location_rank(["Cambridge, Massachusetts"]) == 0
-    assert fetcher._location_rank(["Remote"]) == 1
-    assert fetcher._location_rank(["San Jose, CA"]) == 2
-
-
-def test_location_rank_ma_not_substring():
-    # "ma" must not match inside another token (e.g. Norman, OK).
-    assert fetcher._location_rank(["Norman, OK"]) == 2
-
-
-# --- fetcher: new-job flagging --------------------------------------------
-def test_flag_new_jobs_first_run_is_baseline():
-    jobs = [_job("A", "a"), _job("B", "b")]
-    fetcher.flag_new_jobs(jobs, seen=set())
-    assert all(not j["is_new"] for j in jobs)  # nothing "new" on the first ever run
-
-
-def test_flag_new_jobs_detects_new():
-    jobs = [_job("A", "a"), _job("B", "b")]
-    fetcher.flag_new_jobs(jobs, seen={fetcher._job_id(jobs[0])})
-    assert not jobs[0]["is_new"]  # already seen
-    assert jobs[1]["is_new"]  # new since last run
-
-
-def test_merge_jobs_dedups_and_sorts():
-    dup = _job("Dup", "same")
-    ma = _job("MA role", "ma", rank=0)
-    merged = fetcher._merge_jobs([dup, ma], [dict(dup)])  # dup appears twice
-    assert len(merged) == 2  # deduped
-    assert merged[0]["rank"] == 0  # MA sorted first
-
-
-# --- briefing: never drop an internship -----------------------------------
-def test_build_internships_includes_every_posting():
-    jobs = [_job(f"Role {i}", f"link{i}") for i in range(15)]
-    md = briefing.build_internships_markdown(jobs)
-    for j in jobs:
-        assert j["title"] in md
-        assert j["link"] in md
-
-
-def test_new_jobs_get_flag_and_counter():
-    jobs = [_job("Old", "o"), _job("Fresh", "f", is_new=True)]
-    md = briefing.build_internships_markdown(jobs)
-    assert "🆕" in md
-    assert "1 new since yesterday" in md
-
-
-def test_empty_internships_has_friendly_message():
-    md = briefing.build_internships_markdown([])
-    assert "No active security internships" in md
-
-
-# --- briefing: assembly splices code sections, strips model dupes ----------
-def test_assemble_inserts_before_quick_hits_and_keeps_all_jobs():
-    data = {
-        "jobs": [_job("Splice Me", "splice")],
-        "news": [],
-        "cves": [],
-        "kev": [],
-        "ctf": [],
-        "htb": None,
-    }
-    ai = "## 🔥 TOP STORIES\n- x\n\n## 📌 QUICK HITS\n- y"
-    out = briefing.assemble_briefing(ai, data)
-    assert out.index("💼") < out.index("📌 QUICK HITS")  # internships before quick hits
-    assert "Splice Me" in out
-
-
-def test_assemble_strips_model_written_internship_section():
-    data = {"jobs": [_job("Real", "real")], "news": [], "cves": [], "kev": [],
-            "ctf": [], "htb": None}
-    # Model disobeyed and wrote its own (incomplete) internship section.
-    ai = (
-        "## 🔥 TOP STORIES\n- x\n\n"
-        "## 💼 INTERNSHIP OPPORTUNITIES\n- Model's bad list\n\n"
-        "## 📌 QUICK HITS\n- y"
-    )
-    out = briefing.assemble_briefing(ai, data)
-    assert "Model's bad list" not in out  # stray section removed
-    assert "Real" in out  # code-built list present
-    assert out.count(briefing.INTERNSHIP_HEADING) == 1  # exactly one, no dupes
-
-
-def test_htb_token_unwrapping():
-    import base64
-    import json as _json
-
-    jwt = "eyJhbGciOi.eyJzdWIiOiJ.sig"
-    assert fetcher._normalize_htb_token(jwt) == jwt  # clean passes through
-    assert fetcher._normalize_htb_token("Bearer " + jwt) == jwt  # strip prefix
-    assert fetcher._normalize_htb_token(_json.dumps({"token": jwt})) == jwt  # json blob
-    # base64-encoded JSON blob (the localStorage 'identity' case that 401'd)
-    blob = base64.b64encode(_json.dumps({"token": jwt}).encode()).decode()
-    assert fetcher._normalize_htb_token(blob) == jwt
-
-
-def test_poc_note():
-    assert briefing._poc_note([]) == ""
-    assert "public PoC" in briefing._poc_note([{"url": "http://x", "stars": 3}])
-
-
-# --- dashboard -------------------------------------------------------------
-def test_snapshot_counts():
-    data = {
-        "news": [1, 2, 3],
-        "cves": [{"score": 9.0}, {"score": 5.0}],
-        "kev": [{"pocs": [1]}, {"pocs": []}],
-        "jobs": [{"is_new": True, "rank": 0}, {"is_new": False, "rank": 2}],
-        "ctf": [1],
-        "htb": {"points": 42},
-    }
-    s = dashboard.snapshot(data)
-    assert s["news"] == 3 and s["cves"] == 2 and s["high_cves"] == 1
-    assert s["kev"] == 2 and s["kev_poc"] == 1
-    assert s["jobs"] == 2 and s["new_jobs"] == 1 and s["ma_remote_jobs"] == 1
-    assert s["htb_points"] == 42
-
-
-def test_record_snapshot_dedups_same_day(tmp_path):
-    p = tmp_path / "history.json"
-    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": [], "htb": None}
-    dashboard.record_snapshot(data, path=str(p))
-    hist = dashboard.record_snapshot(data, path=str(p))
-    assert len(hist) == 1  # two runs same day -> one entry, not two
-
-
-def test_render_dashboard_is_valid_html(tmp_path):
-    p = tmp_path / "index.html"
-    data = {"news": [1], "cves": [{"score": 9}], "kev": [], "jobs": [], "ctf": [], "htb": None}
-    dashboard.render_dashboard([dashboard.snapshot(data)], data, path=str(p))
-    out = p.read_text()
-    assert out.startswith("<!doctype html>") and out.rstrip().endswith("</html>")
-    assert "<svg" in out
-
-
-# --- security: injection neutralized ---------------------------------------
-def test_strip_html_removes_tags():
-    assert "<img" not in fetcher._strip_html("Acme <img src=x onerror=alert(1)> Co")
-    assert "script" not in fetcher._strip_html("<script>alert(1)</script>").lower()
-
-
-def test_md_escapes_control_chars():
-    out = briefing._md("Evil [click](http://bad) **x**")
-    assert "\\[" in out and "\\]" in out and "\\*" in out
-
-
-def test_safe_url_blocks_non_http():
-    assert briefing._safe_url("javascript:alert(1)") == ""
-    assert briefing._safe_url("data:text/html,x") == ""
-    assert briefing._safe_url("https://ok.com") == "https://ok.com"
-
-
-def test_safe_url_ignores_whitespace_obfuscation():
-    # Mail clients/browsers ignore whitespace and control chars inside a scheme,
-    # so "java\tscript:" is a live link — it must not slip past the check.
-    assert fetcher.safe_url("java\tscript:alert(1)") == ""
-    assert fetcher.safe_url("  javascript:alert(1)") == ""
-    assert fetcher.safe_url("JAVASCRIPT:alert(1)") == ""
-    assert fetcher.safe_url(None) == ""
-    assert fetcher.safe_url("https://ok.com/a?b=1&c=2") == "https://ok.com/a?b=1&c=2"
-
-
-def test_feed_links_are_scheme_checked_at_ingest(monkeypatch):
-    """A hostile feed's javascript: link must never enter the pipeline."""
-    entry = {
-        "title": "Breaking news",
-        "link": "javascript:alert(document.cookie)",
-        "summary": "click me",
-        "published_parsed": None,
-    }
-    feed = type("F", (), {"bozo": False, "entries": [entry], "bozo_exception": None})()
-    monkeypatch.setattr(fetcher, "RSS_FEEDS", {"Evil Feed": "https://evil.example/rss"})
-    monkeypatch.setattr(fetcher, "_parse_feed", lambda url, timeout=30: feed)
-
-    items = fetcher.fetch_rss_feeds()
-    assert len(items) == 1
-    assert items[0]["link"] == ""  # dropped, not passed through to the prompt
-    assert "javascript" not in briefing._format_data_for_prompt(
-        {"news": items, "cves": [], "kev": [], "jobs": [], "ctf": []}
-    )
-
-
-def test_ctf_url_falls_back_when_primary_is_unsafe():
-    events = [{"title": "CTF", "start": "2026-08-10T13:00:00+00:00",
-               "url": "javascript:alert(1)", "ctftime_url": "https://ctftime.org/event/1"}]
-    parsed = fetcher._parse_ctf_events(events)
-    assert parsed[0]["url"] == "https://ctftime.org/event/1"
-
-
-# --- security: the model's own links are sanitized before sending -----------
-def test_render_html_neutralizes_model_written_dangerous_links():
-    """The model is told to 'use the provided links' and could echo/invent any
-    URL; its Markdown is converted to HTML and emailed, so check the output."""
-    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": []}
-    for bad in (
-        "javascript:alert(1)",
-        "JaVaScRiPt:alert(1)",
-        "java\tscript:alert(1)",
-        "&#106;avascript:alert(1)",
-        "data:text/html,x",
-    ):
-        out = briefing.render_html(f"[click]({bad})", data, "today")
-        assert "javascript" not in out.lower(), bad
-        assert "data:text/html" not in out, bad
-        assert 'href="#"' in out, bad  # neutralized, link text still readable
-
-
-def test_render_html_preserves_legitimate_links():
-    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": []}
-    out = briefing.render_html("[ok](https://nvd.nist.gov/a?b=1&c=2)", data, "today")
-    assert 'href="https://nvd.nist.gov/a?b=1&amp;c=2"' in out
-
-
-# --- briefing: an empty model response must fail loudly, not obscurely ------
-def test_summarize_raises_clear_error_on_empty_response(monkeypatch):
-    """Gemini returns a null message when it stops before emitting text (thinking
-    tokens exhausting max_tokens, or a safety block). That must surface as a
-    readable error carrying finish_reason — not an AttributeError on None."""
-    import types
-
-    class _Msg:
-        content = None
-
-    class _Choice:
-        message = _Msg()
-        finish_reason = "length"
-
-    class _Client:
-        def __init__(self, **kwargs):
-            self.chat = types.SimpleNamespace(
-                completions=types.SimpleNamespace(
-                    create=lambda **kw: types.SimpleNamespace(choices=[_Choice()])
-                )
-            )
-
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(briefing, "OpenAI", _Client)
-
-    data = {"news": [], "cves": [], "kev": [], "jobs": [], "ctf": []}
-    try:
-        briefing.summarize(data)
-    except RuntimeError as exc:
-        assert "finish_reason" in str(exc) and "length" in str(exc)
-    else:
-        raise AssertionError("expected RuntimeError for an empty model response")
-
-
-def test_hostile_job_cannot_forge_link_or_markup():
-    import markdown as mdlib
-
-    evil = _job("Nice <img src=x onerror=alert(1)> [phish](http://evil)", "https://real")
-    html = mdlib.markdown(briefing.build_internships_markdown([evil]), extensions=["extra"])
-    assert "<img" not in html  # no live tag — angle brackets escaped by _md
-    assert 'href="http://evil"' not in html  # forged link neutralized by _md
-    assert 'href="https://real"' in html  # the legitimate link still works
-
-
-# --- briefing: HTB section only when data present -------------------------
-def test_htb_section_empty_without_data():
-    assert briefing.build_htb_markdown(None) == ""
+import hackathons  # noqa: E402
+import state  # noqa: E402
+
+
+def _news():
+    return [
+        fetcher._story("Bleeping Computer", "cyber", "Optimizely hack hits CNN",
+                       "https://bleepingcomputer.com/optimizely", "Skimmer on news sites.", None),
+        fetcher._story("OpenAI", "ai", "Introducing GPT-6.2",
+                       "https://openai.com/gpt-6-2", "A new model.", None),
+    ]
+
+
+def _papers():
+    paper = fetcher._paper({"paper": {"id": "2611.00001", "title": "Continual learning without forgetting",
+                                      "summary": "A new method.", "upvotes": 40,
+                                      "submittedOnDailyAt": "2026-11-18T00:00:00.000Z"}})
+    return [paper]
+
+
+@pytest.fixture
+def pipeline(tmp_path, monkeypatch):
+    """Fake sources and SMTP. Returns the list that collects sent emails."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)  # coverage ranking unless a test opts in
+    monkeypatch.setattr(fetcher, "fetch_all",
+                        lambda: {"news": _news(), "papers": _papers(), "kev": {}, "ctf": [],
+                                 "generated_at": ""})
+    monkeypatch.setattr(hackathons, "fetch_hackathons", lambda: [])
+    outbox = []
+    monkeypatch.setattr(briefing, "send_email",
+                        lambda subject, html, text: outbox.append((subject, html, text)))
+    return outbox
+
+
+def test_dry_run_writes_preview_and_records_nothing(pipeline, tmp_path):
+    briefing.main(["--dry-run"])
+    assert pipeline == []  # nothing sent
+    assert "Optimizely hack hits CNN" in (tmp_path / "preview.html").read_text()
+    assert "GPT-6.2" in (tmp_path / "preview.txt").read_text()
+    assert not (tmp_path / "state" / "sent.json").exists()
+
+
+def test_real_run_sends_then_records(pipeline, tmp_path):
+    briefing.main([])
+    assert len(pipeline) == 1
+    subject, html, _ = pipeline[0]
+    assert subject.startswith("Morning Briefing")
+    assert "Optimizely hack hits CNN" in html
+    sent = state.load_sent(str(tmp_path / "state" / "sent.json"))
+    assert f"story:{fetcher.story_id('https://openai.com/gpt-6-2')}" in sent
+
+
+def test_second_run_does_not_repeat_stories(pipeline):
+    briefing.main([])
+    briefing.main([])
+    _, second_html, _ = pipeline[1]
+    assert "Optimizely hack hits CNN" not in second_html
+    assert "No new security stories today." in second_html
+
+
+def test_failed_send_records_nothing(pipeline, tmp_path, monkeypatch):
+    def smtp_down(*args):
+        raise ConnectionError("SMTP down")
+
+    monkeypatch.setattr(briefing, "send_email", smtp_down)
+    with pytest.raises(ConnectionError):
+        briefing.main([])
+    assert not (tmp_path / "state" / "sent.json").exists()
+
+
+def test_only_shown_stories_are_recorded(pipeline, tmp_path, monkeypatch):
+    # Distinct headlines (similar ones would correctly cluster into one story).
+    titles = ["Uber driver data breach", "Tor fights DDoS", "Fugaku supercomputer offline",
+              "Docker Hub keys stolen", "Telegram widget bypass", "Phrack 73 released",
+              "ScreenConnect attacks continue", "iPhone microphone flaw",
+              "Ransomware suspect extradited", "Project Zero shortens deadline"]
+    many = [fetcher._story("Dark Reading", "cyber", t, f"https://darkreading.com/{i}", "", None)
+            for i, t in enumerate(titles)]
+    monkeypatch.setattr(fetcher, "fetch_all",
+                        lambda: {"news": many, "papers": [], "kev": {}, "ctf": [],
+                                 "generated_at": ""})
+    briefing.main([])
+    sent = state.load_sent(str(tmp_path / "state" / "sent.json"))
+    assert len([k for k in sent if k.startswith("story:")]) == briefing.STORIES_PER_SECTION["cyber"]
+
+
+def test_papers_get_their_own_section_and_are_recorded(pipeline, tmp_path):
+    briefing.main([])
+    _, html, _ = pipeline[0]
+    assert "Research papers" in html
+    assert "Continual learning without forgetting" in html and "40 upvotes" in html
+    assert "https://arxiv.org/abs/2611.00001" in html
+    sent = state.load_sent(str(tmp_path / "state" / "sent.json"))
+    assert f"story:{fetcher.story_id('https://arxiv.org/abs/2611.00001')}" in sent
+
+    briefing.main([])  # the same paper doesn't come back tomorrow
+    assert "Continual learning without forgetting" not in pipeline[1][1]
+
+
+def test_gemini_picks_and_project_reach_the_email(pipeline, monkeypatch):
+    stories_seen = []
+
+    def fake_edit(stories):
+        stories_seen.extend(stories)
+        ai = next(s for s in stories if s["category"] == "ai")
+        return {"cyber": [], "ai": [{**ai, "why": "A frontier model release."}],
+                "project": {"title": "Build an eval harness", "pitch": "Long pitch.",
+                            "milestones": [], "stack": [], "inspired_by": []},
+                "model": "gemini-flash-latest"}
+
+    monkeypatch.setattr(briefing.editor, "edit", fake_edit)
+    briefing.main([])
+    _, html, _ = pipeline[0]
+    assert "A frontier model release." in html and "Build an eval harness" in html
+    assert "Optimizely hack hits CNN" not in html  # Gemini didn't pick it
+    assert "Stories picked by gemini-flash-latest." in html
+    assert len(stories_seen) == 3  # the editor saw every candidate: 2 news + 1 paper
 
 
 def test_failure_email_no_crash_without_env(monkeypatch):
-    # Must degrade gracefully (log + return), never raise, when creds are absent.
     for var in ("EMAIL_SENDER", "EMAIL_RECIPIENT", "EMAIL_PASSWORD"):
         monkeypatch.delenv(var, raising=False)
-    briefing.send_failure_email("boom")  # should not raise
-
-
-def test_htb_section_rendered():
-    md = briefing.build_htb_markdown(
-        {"name": "andyExel", "rank": "Hacker", "points": 42, "user_owns": 3}
-    )
-    assert "andyExel" in md
-    assert "Hacker" in md
-    assert "42 pts" in md and "3 user owns" in md
+    briefing.send_failure_email("boom")  # should log and return, not raise

@@ -4,3 +4,5 @@ venv/
 .venv/
 .env
 preview.html
+preview.txt
+state/sent.json.tmp

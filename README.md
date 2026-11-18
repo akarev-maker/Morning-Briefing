@@ -1,274 +1,197 @@
-# 🔐 Morning Cyber Briefing
+# Morning Briefing
 
 ![Tests](https://github.com/akarev-maker/Morning-Briefing/actions/workflows/tests.yml/badge.svg)
 
-An automated morning cybersecurity briefing. Every day at **7:00 AM Eastern**,
-GitHub Actions fetches the latest security news, fresh CVEs, internship postings,
-CTFs, and your HackTheBox progress, has an AI model summarize everything for a
-UMass Amherst cybersecurity student on the HackTheBox Web Hacking path, and emails
-it to you. No manual interaction, and your computer doesn't need to be on.
+A daily email newsletter covering AI/ML news, new research papers, security
+news, New England hackathons, and upcoming CTFs. A GitHub Actions job builds and
+sends it every morning, with nothing running on a personal machine.
 
-## What it does
+The goal is a short list of what actually mattered that day, not an AI-written
+summary of everything. Code does the fetching, de-duplicating, and ranking. A
+language model (Gemini) is only allowed to choose from the stories it is given
+and write one sentence about each, and the email still goes out if the model
+is down.
 
-- **Fetches** from four RSS security feeds (Krebs, The Hacker News, Bleeping
-  Computer, Dark Reading), the NVD CVE API (last 24h, prioritizing CVSS 7.0+),
-  CISA's Known Exploited Vulnerabilities (KEV) catalog for actively-exploited
-  CVEs, and curated GitHub internship lists for security internships.
-- **Enriches** each CVE with whether a **public proof-of-concept exploit** exists
-  (via the community PoC-in-GitHub index) — the same triage a pentester does.
-- **Flags brand-new internships** since yesterday (🆕) so you apply first, where
-  it matters most.
-- **Adds skill-building context**: upcoming **CTF competitions** (CTFtime) and —
-  optionally — your live **HackTheBox Academy** progress (modules completed,
-  enrolled paths, tier).
-- **Summarizes** it all with the `gemini-flash-latest` model via the **Google Gemini API**
-  (free with GitHub Copilot / Student). Its large context means every CVE is
-  included — nothing gets trimmed to fit.
-- **Emails** a dark-themed HTML briefing (with a plain-text fallback) via Gmail.
-  The internship / HTB / CTF sections are built **deterministically in code**, so
-  the AI can never drop an item — it only writes the narrative parts.
-- **Fails gracefully** — a single broken feed logs a warning and is skipped; if
-  the AI call fails you still get a complete briefing built from the raw data;
-  and if the whole run fails, you get a **failure-alert email** (plus a GitHub
-  issue as a backstop) so it's never silent.
+## What's in the email
 
-Email sections: 🔥 Top Stories · 🚨 CVEs to Know (with 🔴 actively-exploited and
-🧪 PoC flags) · 🎯 Relevant to Your HTB Path · 🏆 Your HackTheBox Progress ·
-🎓 Upcoming CTFs · 💼 Internship Opportunities (🆕 new-flagged) · 📌 Quick Hits.
+- **AI and machine learning**: news from OpenAI, Google DeepMind, Hugging Face,
+  Google Research, Simon Willison, Import AI, Interconnects, Sebastian Raschka,
+  MIT Technology Review, and popular Hacker News posts.
+- **Research papers**: arXiv papers from Hugging Face Daily Papers, ranked by
+  community upvotes, with links to the paper, the discussion, and the code.
+- **Cybersecurity**: Krebs on Security, The Hacker News, Bleeping Computer,
+  Dark Reading, and Hacker News. Any CVE a story mentions is checked against
+  CISA's Known Exploited Vulnerabilities catalog and a public index of
+  proof-of-concept exploit code, and tagged accordingly.
+- **Project idea**: one multi-week AI/ML project based on the day's stories.
+- **Hackathons**: in-person events in New England and large online AI or
+  security events, from MLH and Devpost. Events at selected schools are marked
+  as worth applying to.
+- **CTFs**: competitions in the next three weeks, from CTFtime.
 
-## 📊 Dashboard
+Each story shows which outlets covered it, and a footer reports any source that
+failed or returned nothing.
 
-Each run also records a small daily snapshot to `state/history.json` and rebuilds
-a **self-contained static dashboard** (`docs/index.html`) — today's numbers plus
-trend charts (internships, CVEs, KEV, HackTheBox points) that fill in over time.
-It's published free via **GitHub Pages** at:
+## How it works
 
-**https://midnightminigolf.xyz/Morning-Briefing/**
-
-(Your account has a custom Pages domain, so it serves there rather than at
-`github.io`.) Pages is set to **Deploy from a branch → `main` / `/docs`**; the
-workflow commits the regenerated dashboard back on every run.
-
-## Project structure
-
-| File | Purpose |
-|------|---------|
-| `fetcher.py` | All data fetching (RSS news, NVD CVEs, CISA KEV, internships). |
-| `briefing.py` | AI summarization + email rendering & sending. Entry point. |
-| `.github/workflows/morning.yml` | GitHub Actions schedule + manual trigger. |
-| `requirements.txt` | Python dependencies. |
-| `README.md` | This file. |
-
-The briefing email is organized into: 🔥 Top Stories · 🚨 CVEs to Know ·
-🎯 Relevant to Your HTB Path (incl. HackTheBox news) · 💼 Internship
-Opportunities · 📌 Quick Hits.
-
----
-
-## Setup
-
-You'll need a GitHub account and a Gmail account. Total time: ~15 minutes.
-
-### 1. Get a Google Gemini API key
-
-The AI summarization uses the Google Gemini API (via its OpenAI-compatible
-endpoint), authenticated with an API key.
-
-1. Go to **Google AI Studio → API keys**:
-   <https://aistudio.google.com/app/apikey>.
-2. Sign in with a Google account and click **Create API key**.
-3. Copy the key — this is your `GEMINI_API_KEY`.
-
-> **Note:** Gemini's free tier is generous and rate-limited; it's plenty for a
-> once-a-day briefing. (This project previously used GitHub Models, which GitHub
-> [permanently retired on 2026-07-30](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/).)
-
-### 2. Create a Gmail App Password (requires 2-Step Verification)
-
-Gmail won't accept your normal password over SMTP. You need an **App Password**,
-which requires 2-Step Verification (2FA) to be enabled first.
-
-1. Turn on 2FA if you haven't: <https://myaccount.google.com/signinoptions/two-step-verification>.
-2. Go to **App Passwords**: <https://myaccount.google.com/apppasswords>.
-   (If the page says it's unavailable, 2FA isn't fully enabled yet — finish step 1.)
-3. Enter an app name like `Morning Briefing` and click **Create**.
-4. Google shows a **16-character password** (like `abcd efgh ijkl mnop`). Copy it.
-   Use it **with or without spaces** — both work. This is your `EMAIL_PASSWORD`.
-
-Your `EMAIL_SENDER` is your full Gmail address (e.g. `you@gmail.com`).
-`EMAIL_RECIPIENT` is wherever you want the briefing delivered (can be the same
-address).
-
-### 3. Add the secrets to your GitHub repo
-
-1. Push this project to a GitHub repository (public or private — either works).
-2. In the repo, go to **Settings → Secrets and variables → Actions**.
-3. Click **New repository secret** and add each of these:
-
-   | Secret name | Value |
-   |-------------|-------|
-   | `GEMINI_API_KEY` | The API key from step 1. |
-   | `EMAIL_SENDER` | Your Gmail address. |
-   | `EMAIL_RECIPIENT` | Where to deliver the briefing. |
-   | `EMAIL_PASSWORD` | The 16-char Gmail App Password from step 2. |
-
-   Names must match **exactly** — the workflow reads them by name.
-
-### 3b. Optional integrations
-
-These add sections to the briefing. Leave them out and those sections are simply
-skipped — everything else still works.
-
-**🏆 HackTheBox progress** — shows your labs rank, points, and machine owns.
-
-> Note: this tracks the **labs/machines** platform, not HTB Academy. Academy's API
-> can't be authenticated from an unattended job (it needs a live browser session),
-> so we use the labs platform, where a durable App Token works.
-
-1. Log in to HackTheBox → **Profile Settings → App Tokens → Create App Token**.
-   Copy it.
-2. Find your numeric user ID: open your HTB profile; the URL ends in
-   `/users/<ID>` — that number is your `HTB_USER_ID`.
-3. Add two secrets: `HTB_TOKEN` (the App Token) and `HTB_USER_ID` (the number).
-
-**💼 Federal / MA cyber internships via USAJOBS** — surfaces DoD, national-lab,
-and other federal internships the GitHub lists miss.
-
-1. Register for a free API key: <https://developer.usajobs.gov/apirequest/> (you
-   provide an email; they email you a key).
-2. Add two secrets: `USAJOBS_API_KEY` (the key) and `USAJOBS_EMAIL` (the email you
-   registered with — USAJOBS requires it as the `User-Agent`).
-
-### 4. Test it manually
-
-You don't have to wait until 7 AM.
-
-1. Go to the **Actions** tab in your repo.
-2. If prompted, click **"I understand my workflows, go ahead and enable them."**
-3. Select **Morning Cyber Briefing** in the left sidebar.
-4. Click **Run workflow → Run workflow** (the `workflow_dispatch` trigger).
-5. Watch the run. When the **Send briefing** step goes green, check your inbox.
-   Click into the step logs to see how many news items / CVEs / jobs were fetched
-   and any warnings about skipped feeds.
-
-Run it locally instead (optional):
-
-```bash
-pip install -r requirements.txt
-export GEMINI_API_KEY="…"
-export EMAIL_SENDER="you@gmail.com"
-export EMAIL_RECIPIENT="you@gmail.com"
-export EMAIL_PASSWORD="abcd efgh ijkl mnop"
-python briefing.py
-# Or just inspect the fetched data without emailing:
-python fetcher.py
+```mermaid
+flowchart LR
+  F["fetcher.py<br/>RSS, HN, HF papers,<br/>KEV, CTFtime"] --> C["curate.py<br/>group duplicates,<br/>count coverage, tag CVEs"]
+  H["hackathons.py<br/>MLH, Devpost"] --> S
+  C --> S["state.py<br/>drop already-sent items"]
+  S --> E{"editor.py<br/>Gemini picks"}
+  E -- ok --> R["render.py<br/>HTML + text email"]
+  E -- fails --> FB["coverage ranking"] --> R
+  R --> B["briefing.py<br/>send via Gmail,<br/>then save sent log"]
 ```
 
----
+One run, in order:
 
-## The schedule
+1. **Fetch.** `fetcher.py` and `hackathons.py` call every source. Each source
+   has its own error handling, so a failure costs that one source, and its
+   outcome is recorded for the footer.
+2. **Group duplicates.** `curate.py` groups articles about the same story,
+   matching on shared URLs, shared CVE IDs, or TF-IDF similarity of the
+   headline and summary. The number of distinct outlets in a group is its
+   coverage, which is the ranking signal.
+3. **Tag CVEs.** CVE IDs found in story text are looked up in the CISA KEV
+   catalog and in PoC-in-GitHub.
+4. **Skip what was already sent.** `state.py` keeps `state/sent.json`, a
+   14-day log of sent links, CVEs, and hackathons.
+5. **Pick.** `editor.py` sends the top candidates in each section to Gemini,
+   which answers in JSON with story IDs, one sentence per pick, and a project
+   idea. Code validates every field. If no model gives a usable answer, the
+   top stories by coverage (or upvotes, for papers) are used instead.
+6. **Render and send.** `render.py` builds the email, and `briefing.py` sends it
+   over Gmail SMTP. The sent log is saved only after the send succeeds, and the
+   workflow commits it back to the repository.
 
-The workflow runs at **12:00 UTC daily** (`cron: "0 12 * * *"`) = 7 AM EST.
+If the run crashes, a failure email is sent and the workflow opens a GitHub
+issue.
 
-- GitHub's scheduler runs on a best-effort basis and can be delayed several
-  minutes (occasionally more) during peak load — this is normal.
-- The cron is fixed to **UTC**, so during Eastern **Daylight** Time (EDT, roughly
-  Mar–Nov) it arrives at **8 AM local**. If you want a steady 7 AM year-round,
-  change the cron seasonally (`0 11 * * *` for EDT) or pick a compromise time.
+## Design decisions
 
-To change the time, edit the `cron` line in `.github/workflows/morning.yml`.
-[crontab.guru](https://crontab.guru) helps build the expression.
+**The model chooses but never writes content that matters.** Gemini returns
+story IDs. Titles, links, and tags always come from the fetched data, and IDs
+that weren't in the candidate list are dropped. Its text is stripped of markup,
+length-capped, and HTML-escaped. A prompt-injected headline can at worst
+produce an odd sentence; it can't add a link, invent a story, or block the
+email.
 
----
+**Coverage as the ranking signal.** A story reported by four outlets is
+probably more important than one reported by one. This needs no model, so it is
+also the fallback ranking. Articles are grouped with TF-IDF cosine similarity:
+each story becomes a vector of word weights, where words used by few of that
+day's stories (such as a company name) count for more than common ones. The
+merge threshold, 0.25, was chosen by scoring every pair of one day's 50
+stories: real duplicates scored 0.26 to 0.87 and the closest unrelated pair
+0.22. Groups are found with union-find, so if A matches B and B matches C, all
+three merge. The gap is small and came from one day's data, so the threshold
+is a starting point rather than a measured optimum.
 
-## Security & making the repo public
+**Fallbacks for each failure.** Gemini models are tried in order:
+`gemini-4-hydrogen`, then `gemini-flash-latest`, then
+`gemini-flash-lite-latest`, all on the free tier. Each attempt has a 90-second
+timeout and no automatic retries.
 
-This repo is safe to make public — that's how it works best as a portfolio piece.
+**Silent failures are reported.** A source that throws an exception is easy to
+notice. A source that quietly returns nothing, because a field was renamed, is
+not. Sources that always have data (KEV, MLH, Devpost, CTFtime, Hacker News,
+Hugging Face) report a zero as a possible failure in the email footer.
 
-- **No secrets are in the code.** Everything sensitive (tokens, the Gmail App
-  Password, your email) is read from environment variables populated by GitHub
-  **Secrets**, which are encrypted and never exposed in logs or to forks.
-- `.gitignore` blocks `.env` so a local secrets file can't be committed by
-  accident. Never hardcode a credential — always add it as a Secret.
-- If you ever paste a token somewhere by mistake, **rotate it** (regenerate the
-  GitHub token / Gmail App Password) — git history is forever on a public repo.
-- The workflow needs `contents: write` permission (declared in `morning.yml`)
-  only to commit the `state/seen_jobs.json` file that powers 🆕 new-internship
-  detection. It pushes with the built-in `GITHUB_TOKEN` — no extra secret.
+**Untrusted input is cleaned twice.** Everything fetched is untrusted. HTML
+tags are stripped when data comes in, URLs are checked against an http/https
+allowlist (which also catches tricks like `java\tscript:`), and every value is
+HTML-escaped when the email is built. The email is built as HTML directly,
+without converting Markdown, so there is no second markup language to escape.
 
-## Development
+**MLH is read from embedded JSON.** MLH has no API, but its events page embeds
+the event list as JSON in a `<script>` tag. Reading that is more stable than
+scraping visible HTML, and if the tag disappears the fetch fails with a clear
+error, not by returning nothing.
 
-- **Tests:** `pip install pytest && pytest` — network-free unit tests cover the
-  "never drop an internship" guarantee, new-job flagging, section assembly, and
-  relevance filters. They also run in CI on every push (the badge up top).
-- **Inspect fetched data without emailing:** `python fetcher.py`.
+**Sent log is written after sending.** If the state were saved first and the
+send then failed, those stories would be skipped the next day and never seen.
+Saving afterwards means a failed send costs a day of repeats instead.
 
-## Troubleshooting
+## Reliability
 
-### The internship section is empty or stale
+From the GitHub Actions history of the previous version (July 8 to
+November 17, 2026): 128 of 133 scheduled runs delivered an email. In the 91
+runs whose logs are still retained, the Gemini call failed in 62 (mostly 503
+"high demand" errors) and the raw-data fallback was sent. The 5 runs that
+delivered nothing were all Gemini requests that hung until GitHub cancelled the
+job at its 10-minute limit; a cancelled job also skipped the failure alert.
+That led to the per-request timeout, the model fallback chain, and an alert
+step that also fires on cancellation.
 
-Internships come from curated, community-maintained GitHub lists (`INTERNSHIP_SOURCES`
-in `fetcher.py`) — currently `SimplifyJobs/Summer2026-Internships` and
-`vanshb03/Summer2027-Internships`. These publish structured `listings.json` files
-updated daily and served from `raw.githubusercontent.com`, so they are reliable
-and never IP-blocked from GitHub Actions (unlike Indeed's deprecated RSS, which
-this project used to use and which returns 403 from runners).
+## Project layout
 
-Things to know / do if the section looks thin:
+| File | Purpose |
+|---|---|
+| `briefing.py` | Entry point: runs the pipeline, sends the email, saves state |
+| `fetcher.py` | News feeds, Hacker News, Hugging Face papers, CISA KEV, PoC lookup, CTFtime |
+| `hackathons.py` | MLH and Devpost; New England, interest, and school filters |
+| `curate.py` | Duplicate grouping, coverage ranking, CVE tagging |
+| `state.py` | The sent log (`state/sent.json`) |
+| `editor.py` | Gemini prompt, response validation, model fallback |
+| `render.py` | HTML and plain-text email |
+| `tests/` | 92 pytest tests; every outside call is faked |
+| `.github/workflows/morning.yml` | Daily schedule at 12:00 UTC |
+| `.github/workflows/tests.yml` | Runs the tests on every push and pull request |
 
-1. **Off-cycle is normal.** In summer there are fewer *active* postings — the
-   next cycle's roles flood in during the fall. Only `active: true` roles are
-   shown; Massachusetts and remote roles are automatically sorted to the top.
-2. **Repos roll over each year.** When a new cycle starts (e.g. a
-   `Summer2028-Internships` repo appears, or Simplify publishes its 2027 repo),
-   just update the URLs in `INTERNSHIP_SOURCES`. Check the branch is `dev` and
-   the path is `.github/scripts/listings.json`.
-3. **Widen the filter.** Edit `SECURITY_KEYWORDS` in `fetcher.py` to catch more
-   role titles, or remove the `_is_security_role` filter to include all
-   internships.
-4. **Add another source.** `fetch_jobs()` accepts any JSON list whose items have
-   `title`, `company_name`, `url`, `locations`, `active`, and `date_posted`
-   fields — drop another repo's `listings.json` into `INTERNSHIP_SOURCES` and it
-   just works.
+## Running it
 
-### CISA KEV feed
+```bash
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt pytest
 
-Actively-exploited CVEs come from CISA's Known Exploited Vulnerabilities catalog
-(`KEV_URL` in `fetcher.py`), a plain JSON feed that is **not** IP-blocked from
-Actions. (CISA's *advisory* RSS feed is 403-blocked from runners, which is why
-this project uses KEV instead.) The `fetch_kev(days=7)` window can be widened if
-you want more history; CISA adds entries in irregular batches, not daily.
+# Build the email from live data and write preview.html / preview.txt.
+# Sends nothing and records nothing. Works without any keys (no Gemini picks).
+.venv/bin/python briefing.py --dry-run
 
-### No email arrived
+.venv/bin/python -m pytest
+```
 
-- Check the **Actions** run logs. A red **Send briefing** step usually means an
-  SMTP auth error → re-check `EMAIL_SENDER` and that `EMAIL_PASSWORD` is the
-  **App Password**, not your Google account password.
-- Look in **Spam** the first time.
-- `smtplib.SMTPAuthenticationError` → App Password is wrong or 2FA got disabled.
+Each module can also be run on its own to inspect its output, for example
+`python curate.py` (today's stories grouped and ranked) or
+`python hackathons.py`.
 
-### AI summarization failed
+### GitHub Actions setup
 
-- The logs will say so and the email is sent using a raw-data fallback layout.
-- Common causes: expired/incorrect `GEMINI_API_KEY` or hitting the free-tier
-  rate limit. Regenerate the key (step 1) and update the secret.
+Add these repository secrets under Settings, Secrets and variables, Actions:
 
-### A news feed is missing
+| Secret | Value |
+|---|---|
+| `GEMINI_API_KEY` | A key from [Google AI Studio](https://aistudio.google.com/app/apikey) (free tier) |
+| `EMAIL_SENDER` | The Gmail address that sends the email |
+| `EMAIL_PASSWORD` | A Gmail [app password](https://myaccount.google.com/apppasswords) for that address (requires 2-Step Verification) |
+| `EMAIL_RECIPIENT` | Where the email goes |
 
-- Feeds occasionally change URLs or go down. The run logs
-  `Error fetching feed '<name>'` and continues. Update the URL in `RSS_FEEDS` in
-  `fetcher.py` if a source is permanently broken.
+The workflow runs daily at 12:00 UTC (7 AM Eastern in winter, 8 AM in summer).
+GitHub delays scheduled runs when it is busy, sometimes by hours, so news is
+collected from a 36-hour window and the sent log prevents repeats. It can also
+be started from the Actions tab.
 
----
+## Configuration
 
-## Customizing
+| To change | Edit |
+|---|---|
+| News sources | `CYBER_FEEDS`, `AI_FEEDS` in `fetcher.py` |
+| Hacker News sorting | `CYBER_KEYWORDS`, `AI_KEYWORDS` in `fetcher.py` |
+| What the editor favors | `READER_INTERESTS` in `editor.py` |
+| Stories per section | `MAX_PICKS` in `editor.py` |
+| Gemini models | `MODELS` in `editor.py` |
+| Paper vote threshold | `PAPER_MIN_UPVOTES` in `fetcher.py` |
+| "Worth applying" schools | `GOOD_SCHOOLS` in `hackathons.py` |
+| Duplicate threshold | `SIMILARITY_THRESHOLD` in `curate.py` |
 
-- **Recipient context / tone:** edit `RECIPIENT_CONTEXT` in `briefing.py`.
-- **Sections & format:** edit `OUTPUT_INSTRUCTIONS` in `briefing.py`.
-- **News sources:** edit `RSS_FEEDS` in `fetcher.py`.
-- **CVE threshold:** change `min_cvss` in `fetch_cves()` in `fetcher.py`.
-- **Email theme:** edit `EMAIL_STYLES` / `HTML_TEMPLATE` in `briefing.py`.
-- **Model:** change `MODEL` in `briefing.py` to any Gemini model (e.g.
-  `gemini-pro-latest` for higher quality, `gemini-flash-lite-latest` for
-  speed/cost). Prefer the `-latest` aliases — pinned versions get retired for new
-  API keys over time.
+## Known limitations
+
+- The duplicate threshold was tuned on one day of stories. Whether two articles
+  merge depends on what else was published that day.
+- A follow-up article from a different outlet, with no shared link or CVE, can
+  show up again on a later day.
+- Hacker News stories are sorted into AI or security by keyword, so posts with
+  neither kind of word in the title are skipped.
+- The MLH reader depends on an undocumented part of their page.
