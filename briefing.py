@@ -86,7 +86,7 @@ def _format_data_for_prompt(data):
     lines = ["=== NEWS (last 24h) ==="]
     if data["news"]:
         for item in data["news"][:PROMPT_NEWS_CAP]:
-            lines.append(f"- [{item['source']}] {item['title']}")
+            lines.append(f"- [{item['category']} | {item['source']}] {item['title']}")
             if item["link"]:
                 lines.append(f"  link: {item['link']}")
             if item["summary"]:

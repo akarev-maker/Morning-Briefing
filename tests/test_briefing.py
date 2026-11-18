@@ -35,7 +35,8 @@ class _FakeResponse:
 
 # --- fetcher: one broken source never kills the run ------------------------
 def test_fetch_all_returns_only_v2_sections(monkeypatch):
-    monkeypatch.setattr(fetcher, "fetch_rss_feeds", lambda: [{"title": "x"}])
+    monkeypatch.setattr(fetcher, "fetch_rss_feeds", lambda: [{"category": "cyber"}])
+    monkeypatch.setattr(fetcher, "fetch_hn", lambda: [{"category": "ai"}])
     monkeypatch.setattr(fetcher, "fetch_kev", lambda: {"CVE-2026-1": {}})
     monkeypatch.setattr(fetcher, "fetch_ctf_events", lambda: [])
     data = fetcher.fetch_all()
@@ -49,6 +50,47 @@ def test_fetch_all_survives_every_source_failing(monkeypatch):
     monkeypatch.setattr(fetcher.SESSION, "get", boom)
     data = fetcher.fetch_all()  # must not raise
     assert data["news"] == [] and data["kev"] == {} and data["ctf"] == []
+
+
+# --- fetcher: categories and Hacker News -----------------------------------
+def test_classify_title():
+    assert fetcher.classify_title("Java4Shell: RCE in OpenJDK when processing Base64") == "cyber"
+    assert fetcher.classify_title("GPT-6.2 Astra and Sol") == "ai"
+    assert fetcher.classify_title("How the Claude Code team thinks about verification") == "ai"
+    assert fetcher.classify_title("jQuery 4.1.0") is None
+    # Whole words only: "ai" inside "said"/"again" must not count.
+    assert fetcher.classify_title("Comcast said again that fiber is cable") is None
+    # Both match: security wins.
+    assert fetcher.classify_title("AI agents used to spread malware") == "cyber"
+
+
+def _hn_entry(title, points="386"):
+    return {
+        "title": title,
+        "link": "https://calif.io/java4shell/",
+        "comments": "https://news.ycombinator.com/item?id=50538240",
+        "summary": f"<p>Article URL: ...</p>\n<p>Points: {points}</p>\n<p># Comments: 95</p>",
+        "published_parsed": None,
+    }
+
+
+def test_hn_story_parses_points_and_category():
+    story = fetcher._hn_story(_hn_entry("Java4Shell: RCE in OpenJDK"))
+    assert story["category"] == "cyber"
+    assert story["points"] == 386
+    assert story["comments"] == "https://news.ycombinator.com/item?id=50538240"
+    assert story["summary"] == ""  # hnrss boilerplate is not a summary
+
+
+def test_hn_story_skips_off_topic():
+    assert fetcher._hn_story(_hn_entry("Solid 2.0")) is None
+
+
+def test_story_id_ignores_tracking_and_trailing_slash():
+    a = fetcher.story_id("https://www.example.com/post/?utm_source=rss")
+    b = fetcher.story_id("http://example.com/post")
+    assert a == b
+    assert a != fetcher.story_id("https://example.com/other")
 
 
 def test_fetch_kev_builds_lookup_by_cve_id(monkeypatch):
@@ -151,7 +193,8 @@ def test_feed_links_are_scheme_checked_at_ingest(monkeypatch):
         "published_parsed": None,
     }
     feed = types.SimpleNamespace(bozo=False, entries=[entry], bozo_exception=None)
-    monkeypatch.setattr(fetcher, "RSS_FEEDS", {"Evil Feed": "https://evil.example/rss"})
+    monkeypatch.setattr(fetcher, "CYBER_FEEDS", {"Evil Feed": "https://evil.example/rss"})
+    monkeypatch.setattr(fetcher, "AI_FEEDS", {})
     monkeypatch.setattr(fetcher, "_parse_feed", lambda url, timeout=30: feed)
 
     items = fetcher.fetch_rss_feeds()

@@ -6,6 +6,7 @@ empty result. One broken source (a dead RSS feed, CISA having a bad day) costs
 that one section, never the whole email.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -57,12 +58,50 @@ FEED_HEADERS = {
 # ---------------------------------------------------------------------------
 # Sources
 # ---------------------------------------------------------------------------
-RSS_FEEDS = {
+CYBER_FEEDS = {
     "Krebs on Security": "https://krebsonsecurity.com/feed/",
     "The Hacker News": "https://feeds.feedburner.com/TheHackersNews",
     "Bleeping Computer": "https://www.bleepingcomputer.com/feed/",
     "Dark Reading": "https://www.darkreading.com/rss.xml",
 }
+
+AI_FEEDS = {
+    "OpenAI": "https://openai.com/news/rss.xml",
+    "Google DeepMind": "https://deepmind.google/blog/rss.xml",
+    "Hugging Face": "https://huggingface.co/blog/feed.xml",
+    "Simon Willison": "https://simonwillison.net/atom/everything/",
+    "MIT Technology Review": "https://www.technologyreview.com/topic/artificial-intelligence/feed",
+}
+
+# Every story that reached HN_MIN_POINTS, newest first. `newest` is used instead
+# of `frontpage` because the front page is a snapshot: a story that peaked at
+# 3 AM is already gone by the time the job runs.
+HN_MIN_POINTS = 150
+HN_FEED = f"https://hnrss.org/newest?points={HN_MIN_POINTS}&count=100"
+
+# Hacker News covers everything, so its stories are sorted by title keywords.
+# Matched as whole words, so "ai" does not match "again" or "said".
+CYBER_KEYWORDS = (
+    "security", "vulnerability", "vulnerabilities", "exploit", "exploited", "rce",
+    "cve", "zero-day", "0day", "malware", "ransomware", "breach", "breached",
+    "hacked", "hacker", "hackers", "phishing", "backdoor", "compromised",
+    "skimmer", "infostealer", "botnet", "ddos", "spyware", "phrack", "cryptography",
+    "encryption", "privilege escalation", "supply chain attack",
+)
+AI_KEYWORDS = (
+    "ai", "llm", "llms", "gpt", "openai", "anthropic", "claude", "gemini",
+    "deepmind", "mistral", "llama", "qwen", "deepseek", "hugging face",
+    "machine learning", "deep learning", "neural", "transformer", "diffusion",
+    "agent", "agents", "agentic", "inference", "fine-tuning", "reinforcement learning",
+)
+
+
+def _keyword_pattern(words):
+    return re.compile(r"\b(" + "|".join(re.escape(w) for w in words) + r")\b", re.I)
+
+
+_CYBER_RE = _keyword_pattern(CYBER_KEYWORDS)
+_AI_RE = _keyword_pattern(AI_KEYWORDS)
 
 # CISA's list of vulnerabilities confirmed exploited in the wild. One JSON file
 # with the whole catalog (about 1,500 entries).
@@ -140,12 +179,36 @@ def _entry_datetime(entry):
     return None
 
 
-def fetch_rss_feeds(hours=24):
-    """Items from the last `hours` across all feeds. Undated items are kept."""
+def story_id(url, title=""):
+    """A short, stable ID for a story, from its URL (or title if it has none).
+
+    The model is given these IDs and must answer with them, so it can only pick
+    stories that exist. Tracking parameters and trailing slashes are removed so
+    the same article linked two ways gets the same ID.
+    """
+    key = (url or "").strip().lower()
+    key = re.sub(r"^https?://(www\.)?", "", key)
+    key = re.sub(r"#.*$", "", key)
+    key = re.sub(r"[?&]utm_[^&]*", "", key).rstrip("?&/")
+    return hashlib.sha1((key or title.lower()).encode("utf-8")).hexdigest()[:10]
+
+
+def classify_title(title):
+    """'cyber', 'ai', or None, by keyword. Cyber wins when both match, since
+    "AI-written malware" is a security story first."""
+    if _CYBER_RE.search(title):
+        return "cyber"
+    if _AI_RE.search(title):
+        return "ai"
+    return None
+
+
+def _fetch_feeds(feeds, category, hours):
+    """Items from the last `hours` across `feeds`. Undated items are kept."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     items = []
 
-    for source, url in RSS_FEEDS.items():
+    for source, url in feeds.items():
         try:
             feed = _parse_feed(url)
             if feed.bozo and not feed.entries:
@@ -158,13 +221,14 @@ def fetch_rss_feeds(hours=24):
                 if published is not None and published < cutoff:
                     continue
                 items.append(
-                    {
-                        "source": source,
-                        "title": _strip_html(entry.get("title", "(untitled)")),
-                        "link": safe_url(entry.get("link", "")),
-                        "summary": _strip_html(entry.get("summary", ""), limit=400),
-                        "published": published.isoformat() if published else "",
-                    }
+                    _story(
+                        source=source,
+                        category=category,
+                        title=entry.get("title", "(untitled)"),
+                        link=entry.get("link", ""),
+                        summary=entry.get("summary", ""),
+                        published=published,
+                    )
                 )
                 kept += 1
             logger.info("Fetched %d recent item(s) from %s", kept, source)
@@ -172,6 +236,80 @@ def fetch_rss_feeds(hours=24):
             logger.warning("Error fetching feed '%s': %s", source, exc)
 
     return items
+
+
+def _story(source, category, title, link, summary, published, points=None, comments=""):
+    """The one shape every story has, whatever feed it came from."""
+    title = _strip_html(title)
+    link = safe_url(link)
+    return {
+        "id": story_id(link, title),
+        "source": source,
+        "category": category,
+        "title": title,
+        "link": link,
+        "summary": _strip_html(summary, limit=400),
+        "published": published.isoformat() if published else "",
+        "points": points,
+        "comments": safe_url(comments),
+    }
+
+
+def fetch_rss_feeds(hours=24):
+    """Recent stories from the security and AI feeds, labeled by category."""
+    return _fetch_feeds(CYBER_FEEDS, "cyber", hours) + _fetch_feeds(AI_FEEDS, "ai", hours)
+
+
+_HN_POINTS_RE = re.compile(r"Points:\s*(\d+)")
+
+
+def _hn_story(entry):
+    """Turn one hnrss entry into a story, or None if it isn't cyber or AI.
+
+    hnrss puts the score in the description ("Points: 386"); the description
+    has no real summary, so it is dropped.
+    """
+    title = entry.get("title", "")
+    category = classify_title(title)
+    if category is None:
+        return None
+    match = _HN_POINTS_RE.search(entry.get("summary", "") or "")
+    return _story(
+        source="Hacker News",
+        category=category,
+        title=title,
+        link=entry.get("link", ""),
+        summary="",
+        published=_entry_datetime(entry),
+        points=int(match.group(1)) if match else None,
+        comments=entry.get("comments", ""),
+    )
+
+
+def fetch_hn(hours=24):
+    """Popular Hacker News stories from the last `hours` that are cyber or AI."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    try:
+        feed = _parse_feed(HN_FEED)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Error fetching Hacker News: %s", exc)
+        return []
+
+    stories, skipped = [], 0
+    for entry in feed.entries:
+        published = _entry_datetime(entry)
+        if published is not None and published < cutoff:
+            continue
+        story = _hn_story(entry)
+        if story is None:
+            skipped += 1
+        else:
+            stories.append(story)
+    logger.info(
+        "Fetched %d Hacker News stor%s (%d off-topic skipped)",
+        len(stories), "y" if len(stories) == 1 else "ies", skipped,
+    )
+    return stories
 
 
 # ---------------------------------------------------------------------------
@@ -288,14 +426,16 @@ def fetch_all():
     """Fetch every source. Never raises; a failed source comes back empty."""
     logger.info("Starting data fetch…")
     data = {
-        "news": fetch_rss_feeds(),
+        "news": fetch_rss_feeds() + fetch_hn(),
         "kev": fetch_kev(),
         "ctf": fetch_ctf_events(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+    by_cat = {c: sum(1 for s in data["news"] if s["category"] == c) for c in ("cyber", "ai")}
     logger.info(
-        "Fetch complete: %d news, %d KEV entries, %d CTFs",
-        len(data["news"]),
+        "Fetch complete: %d cyber + %d AI stories, %d KEV entries, %d CTFs",
+        by_cat["cyber"],
+        by_cat["ai"],
         len(data["kev"]),
         len(data["ctf"]),
     )
