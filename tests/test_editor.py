@@ -27,7 +27,8 @@ def _story(sid, category, title=None):
     }
 
 
-STORIES = [_story("c1", "cyber"), _story("c2", "cyber"), _story("a1", "ai"), _story("a2", "ai")]
+STORIES = [_story("c1", "cyber"), _story("c2", "cyber"), _story("a1", "ai"), _story("a2", "ai"),
+           {**_story("p1", "papers"), "upvotes": 80}]
 POOL = editor.candidates(STORIES)
 
 GOOD = {
@@ -114,6 +115,29 @@ def test_bad_project_is_dropped_but_picks_survive():
 def test_unusable_answers_raise(answer):
     with pytest.raises(ValueError):
         editor.parse_picks(answer, POOL)
+
+
+def test_papers_section_and_project_from_a_paper():
+    answer = {"papers": [{"id": "p1", "why": "A new way to avoid forgetting."}],
+              "project": {**GOOD["project"], "inspired_by": ["p1"]}}
+    picks = editor.parse_picks(json.dumps(answer), POOL)
+    assert [s["id"] for s in picks["papers"]] == ["p1"]
+    assert picks["cyber"] == [] and picks["ai"] == []  # unbalanced is fine
+    assert picks["project"]["inspired_by"][0]["link"] == "https://example.com/p1"
+
+
+def test_section_caps_are_per_section():
+    many = [_story(f"a{i}", "ai") for i in range(20)]
+    pool = editor.candidates(many)
+    answer = {"ai": [{"id": s["id"], "why": "x"} for s in many]}
+    picks = editor.parse_picks(json.dumps(answer), pool)
+    assert len(picks["ai"]) == editor.MAX_PICKS["ai"]
+
+
+def test_prompt_includes_interests_and_papers():
+    prompt = editor.build_prompt(POOL)
+    assert "continual learning" in prompt
+    assert "=== RESEARCH PAPERS ===" in prompt and "80 upvotes" in prompt
 
 
 def test_prompt_lists_ids_and_facts():

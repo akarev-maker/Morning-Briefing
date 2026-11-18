@@ -26,10 +26,11 @@ class FakeResponse:
 def test_fetch_all_returns_only_v2_sections(monkeypatch):
     monkeypatch.setattr(fetcher, "fetch_rss_feeds", lambda: [{"category": "cyber"}])
     monkeypatch.setattr(fetcher, "fetch_hn", lambda: [{"category": "ai"}])
+    monkeypatch.setattr(fetcher, "fetch_papers", lambda: [])
     monkeypatch.setattr(fetcher, "fetch_kev", lambda: {"CVE-2026-1": {}})
     monkeypatch.setattr(fetcher, "fetch_ctf_events", lambda: [])
     data = fetcher.fetch_all()
-    assert set(data) == {"news", "kev", "ctf", "generated_at"}
+    assert set(data) == {"news", "papers", "kev", "ctf", "generated_at"}
 
 
 def test_fetch_all_survives_every_source_failing(monkeypatch):
@@ -40,6 +41,7 @@ def test_fetch_all_survives_every_source_failing(monkeypatch):
     fetcher.reset_status()
     data = fetcher.fetch_all()  # must not raise
     assert data["news"] == [] and data["kev"] == {} and data["ctf"] == []
+    assert data["papers"] == []
     # ...and every source is reported as failed, for the email footer.
     assert fetcher.source_status
     assert all(s["state"] == "failed" for s in fetcher.source_status.values())
@@ -105,6 +107,37 @@ def test_story_id_ignores_tracking_and_trailing_slash():
     b = fetcher.story_id("http://example.com/post")
     assert a == b
     assert a != fetcher.story_id("https://example.com/other")
+
+
+# --- Hugging Face papers ---------------------------------------------------
+def _hf(arxiv_id="2611.17621", upvotes=40, submitted=None, repo=None):
+    from datetime import datetime, timezone
+    submitted = submitted or datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+    return {"paper": {"id": arxiv_id, "title": "Continual <b>learning</b>",
+                      "summary": "New idea.", "upvotes": upvotes,
+                      "submittedOnDailyAt": submitted, "githubRepo": repo}}
+
+
+def test_paper_fields():
+    p = fetcher._paper(_hf(repo="https://github.com/x/y"))
+    assert p["category"] == "papers" and p["title"] == "Continual learning"
+    assert p["link"] == "https://arxiv.org/abs/2611.17621"
+    assert p["comments"] == "https://huggingface.co/papers/2611.17621"
+    assert p["upvotes"] == 40 and p["code"] == "https://github.com/x/y"
+
+
+def test_paper_with_bad_id_or_link_is_rejected():
+    assert fetcher._paper(_hf(arxiv_id="../../evil")) is None
+    assert fetcher._paper(_hf(repo="javascript:alert(1)"))["code"] == ""
+
+
+def test_fetch_papers_filters_votes_and_age(monkeypatch):
+    items = [_hf("2611.00001", upvotes=90), _hf("2611.00002", upvotes=3),
+             _hf("2611.00003", upvotes=50, submitted="2026-01-01T00:00:00.000Z"),
+             _hf("2611.00004", upvotes=20)]
+    monkeypatch.setattr(fetcher.SESSION, "get", lambda *a, **k: FakeResponse(items))
+    papers = fetcher.fetch_papers()
+    assert [p["upvotes"] for p in papers] == [90, 20]  # too few votes and too old dropped
 
 
 # --- KEV and PoC -----------------------------------------------------------

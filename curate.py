@@ -208,6 +208,25 @@ def tag_cves(stories, kev, pocs_lookup=fetcher.pocs_for_cve, max_lookups=MAX_POC
     return stories
 
 
+def curate_papers(papers):
+    """Papers skip clustering: each one is its own story, and upvotes
+    (already sorted by fetcher) are the ranking. This adds the fields every
+    curated story has, so state.py and render.py treat them the same."""
+    return [
+        {
+            **p,
+            "sources": [p["source"]],
+            "coverage": 1,
+            "links": [p["link"]],
+            "cves": [],
+            "cve_info": [],
+            "exploited": False,
+            "has_poc": False,
+        }
+        for p in papers
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------

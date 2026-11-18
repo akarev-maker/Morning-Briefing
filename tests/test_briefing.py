@@ -26,13 +26,21 @@ def _news():
     ]
 
 
+def _papers():
+    paper = fetcher._paper({"paper": {"id": "2611.00001", "title": "Continual learning without forgetting",
+                                      "summary": "A new method.", "upvotes": 40,
+                                      "submittedOnDailyAt": "2026-11-18T00:00:00.000Z"}})
+    return [paper]
+
+
 @pytest.fixture
 def pipeline(tmp_path, monkeypatch):
     """Fake sources and SMTP. Returns the list that collects sent emails."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)  # coverage ranking unless a test opts in
     monkeypatch.setattr(fetcher, "fetch_all",
-                        lambda: {"news": _news(), "kev": {}, "ctf": [], "generated_at": ""})
+                        lambda: {"news": _news(), "papers": _papers(), "kev": {}, "ctf": [],
+                                 "generated_at": ""})
     monkeypatch.setattr(hackathons, "fetch_hackathons", lambda: [])
     outbox = []
     monkeypatch.setattr(briefing, "send_email",
@@ -85,10 +93,24 @@ def test_only_shown_stories_are_recorded(pipeline, tmp_path, monkeypatch):
     many = [fetcher._story("Dark Reading", "cyber", t, f"https://darkreading.com/{i}", "", None)
             for i, t in enumerate(titles)]
     monkeypatch.setattr(fetcher, "fetch_all",
-                        lambda: {"news": many, "kev": {}, "ctf": [], "generated_at": ""})
+                        lambda: {"news": many, "papers": [], "kev": {}, "ctf": [],
+                                 "generated_at": ""})
     briefing.main([])
     sent = state.load_sent(str(tmp_path / "state" / "sent.json"))
-    assert len([k for k in sent if k.startswith("story:")]) == briefing.STORIES_PER_SECTION
+    assert len([k for k in sent if k.startswith("story:")]) == briefing.STORIES_PER_SECTION["cyber"]
+
+
+def test_papers_get_their_own_section_and_are_recorded(pipeline, tmp_path):
+    briefing.main([])
+    _, html, _ = pipeline[0]
+    assert "Research papers" in html
+    assert "Continual learning without forgetting" in html and "40 upvotes" in html
+    assert "https://arxiv.org/abs/2611.00001" in html
+    sent = state.load_sent(str(tmp_path / "state" / "sent.json"))
+    assert f"story:{fetcher.story_id('https://arxiv.org/abs/2611.00001')}" in sent
+
+    briefing.main([])  # the same paper doesn't come back tomorrow
+    assert "Continual learning without forgetting" not in pipeline[1][1]
 
 
 def test_gemini_picks_and_project_reach_the_email(pipeline, monkeypatch):
@@ -108,7 +130,7 @@ def test_gemini_picks_and_project_reach_the_email(pipeline, monkeypatch):
     assert "A frontier model release." in html and "Build an eval harness" in html
     assert "Optimizely hack hits CNN" not in html  # Gemini didn't pick it
     assert "Stories picked by gemini-flash-latest." in html
-    assert len(stories_seen) == 2  # the editor saw every candidate
+    assert len(stories_seen) == 3  # the editor saw every candidate: 2 news + 1 paper
 
 
 def test_failure_email_no_crash_without_env(monkeypatch):

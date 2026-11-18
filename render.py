@@ -36,6 +36,16 @@ TAG_COLORS = {
 
 SUMMARY_CHARS = 240
 NVD_URL = "https://nvd.nist.gov/vuln/detail/"
+NO_PAPERS = "No new papers worth reading today."
+
+
+def discussion_label(url):
+    """Name the discussion link after where it goes."""
+    if "news.ycombinator.com" in url:
+        return "HN discussion"
+    if "huggingface.co" in url:
+        return "Discussion on Hugging Face"
+    return "Discussion"
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +124,8 @@ def story_meta(story):
         parts.append(f"{story['coverage']} outlets")
     if story.get("points"):
         parts.append(f"{story['points']} points on HN")
+    if story.get("upvotes"):
+        parts.append(f"{story['upvotes']} upvotes")
     return " · ".join(p for p in parts if p)
 
 
@@ -231,9 +243,13 @@ def _cve_html(story):
 def _story_html(story):
     title = _link(story["title"], story["link"], color=INK, weight="600")
     extra = _cve_html(story)
+    links = []
     if story.get("comments"):
-        extra += (f'<div style="font-size:12px;margin-top:2px;">'
-                  f'{_link("HN discussion", story["comments"], color=MUTED)}</div>')
+        links.append(_link(discussion_label(story["comments"]), story["comments"], color=MUTED))
+    if story.get("code"):
+        links.append(_link("Code", story["code"], color=MUTED))
+    if links:
+        extra += f'<div style="font-size:12px;margin-top:2px;">{" · ".join(links)}</div>'
     return _item(title, story_meta(story), story_body(story), story_tags(story), extra)
 
 
@@ -321,6 +337,8 @@ def render_html(b, today):
                                                             "No new security stories today.")))
     sections.append(_section("AI and machine learning",
                              _stories_html(b.get("ai", []), "No new AI stories today.")))
+    sections.append(_section("Research papers",
+                             _stories_html(b.get("papers", []), NO_PAPERS)))
     if b.get("project"):
         sections.append(_section("Project idea", _project_html(b["project"])))
     sections.append(_section("Hackathons", _hackathons_html(b.get("hackathons", {}), today)))
@@ -366,6 +384,8 @@ def _text_story(n, s):
         lines.append(f"   {c['id']}: {NVD_URL}{c['id']}{poc}")
     if s.get("link"):
         lines.append(f"   {s['link']}")
+    if s.get("code"):
+        lines.append(f"   Code: {s['code']}")
     return "\n".join(lines)
 
 
@@ -375,7 +395,8 @@ def render_text(b, today):
         out.append("\nNo news was fetched today; the feeds probably failed.")
 
     for title, key, empty in (("Cybersecurity", "cyber", "No new security stories today."),
-                              ("AI and machine learning", "ai", "No new AI stories today.")):
+                              ("AI and machine learning", "ai", "No new AI stories today."),
+                              ("Research papers", "papers", NO_PAPERS)):
         out.append(_text_heading(title))
         stories = b.get(key, [])
         if stories:

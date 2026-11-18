@@ -104,7 +104,21 @@ AI_FEEDS = {
     "Hugging Face": "https://huggingface.co/blog/feed.xml",
     "Simon Willison": "https://simonwillison.net/atom/everything/",
     "MIT Technology Review": "https://www.technologyreview.com/topic/artificial-intelligence/feed",
+    # Researcher-written. Each posts a few times a week at most.
+    "Google Research": "https://research.google/blog/rss/",
+    "Import AI": "https://importai.substack.com/feed",
+    "Interconnects": "https://www.interconnects.ai/feed",
+    "Sebastian Raschka": "https://magazine.sebastianraschka.com/feed",
 }
+
+# arXiv papers picked and upvoted by the ML community each day. JSON, no key.
+# limit=100 covers about the last three days of submissions.
+HF_PAPERS_URL = "https://huggingface.co/api/daily_papers"
+# Papers collect votes over a few days, so a paper submitted today usually
+# qualifies tomorrow. The sent log stops it showing twice.
+PAPER_WINDOW_DAYS = 3
+PAPER_MIN_UPVOTES = 10
+_ARXIV_ID_RE = re.compile(r"^\d{4}\.\d{4,5}$")
 
 # Every story that reached HN_MIN_POINTS, newest first. `newest` is used instead
 # of `frontpage` because the front page is a snapshot: a story that peaked at
@@ -356,6 +370,70 @@ def fetch_hn(hours=NEWS_WINDOW_HOURS):
 
 
 # ---------------------------------------------------------------------------
+# Research papers (Hugging Face Daily Papers)
+# ---------------------------------------------------------------------------
+def _paper(item):
+    """One daily-papers entry as a story, or None if it is malformed.
+
+    The arXiv ID is checked against a strict pattern before it goes into
+    URLs, since it comes from an outside source.
+    """
+    paper = item.get("paper") or {}
+    arxiv_id = str(paper.get("id", ""))
+    if not _ARXIV_ID_RE.match(arxiv_id):
+        return None
+    submitted = None
+    try:
+        submitted = datetime.fromisoformat(
+            str(paper.get("submittedOnDailyAt", "")).replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    story = _story(
+        source="Hugging Face Papers",
+        category="papers",
+        title=paper.get("title", ""),
+        link=f"https://arxiv.org/abs/{arxiv_id}",
+        summary=paper.get("summary", ""),
+        published=submitted,
+        comments=f"https://huggingface.co/papers/{arxiv_id}",
+    )
+    story["upvotes"] = int(paper.get("upvotes") or 0)
+    story["code"] = safe_url(paper.get("githubRepo"))
+    return story
+
+
+def fetch_papers(days=PAPER_WINDOW_DAYS, min_upvotes=PAPER_MIN_UPVOTES):
+    """Recent community-upvoted papers, most upvoted first."""
+    try:
+        resp = SESSION.get(HF_PAPERS_URL, params={"limit": 100},
+                           headers={"User-Agent": USER_AGENT}, timeout=30)
+        resp.raise_for_status()
+        items = resp.json()
+        if not isinstance(items, list):
+            raise ValueError("expected a JSON list")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Error fetching Hugging Face papers: %s", exc)
+        record_source("Hugging Face Papers", 0, error=exc)
+        return []
+    # About 40 papers are submitted every day; zero means something changed.
+    record_source("Hugging Face Papers", len(items), expect_items=True)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    papers = []
+    for item in items:
+        paper = _paper(item)
+        if paper is None or paper["upvotes"] < min_upvotes:
+            continue
+        if paper["published"] and datetime.fromisoformat(paper["published"]) < cutoff:
+            continue
+        papers.append(paper)
+    papers.sort(key=lambda p: p["upvotes"], reverse=True)
+    logger.info("Fetched %d paper(s) with %d+ upvotes from the last %d days",
+                len(papers), min_upvotes, days)
+    return papers
+
+
+# ---------------------------------------------------------------------------
 # CISA KEV
 # ---------------------------------------------------------------------------
 def fetch_kev():
@@ -475,15 +553,17 @@ def fetch_all():
     logger.info("Starting data fetch…")
     data = {
         "news": fetch_rss_feeds() + fetch_hn(),
+        "papers": fetch_papers(),
         "kev": fetch_kev(),
         "ctf": fetch_ctf_events(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     by_cat = {c: sum(1 for s in data["news"] if s["category"] == c) for c in ("cyber", "ai")}
     logger.info(
-        "Fetch complete: %d cyber + %d AI stories, %d KEV entries, %d CTFs",
+        "Fetch complete: %d cyber + %d AI stories, %d papers, %d KEV entries, %d CTFs",
         by_cat["cyber"],
         by_cat["ai"],
+        len(data["papers"]),
         len(data["kev"]),
         len(data["ctf"]),
     )

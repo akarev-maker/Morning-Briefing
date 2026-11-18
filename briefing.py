@@ -35,7 +35,9 @@ logger = logging.getLogger("briefing")
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
 
-STORIES_PER_SECTION = 6
+# Without Gemini there is no judgment of importance, so the fallback shows a
+# fixed number per section.
+STORIES_PER_SECTION = {"cyber": 6, "ai": 6, "papers": 3}
 PREVIEW_HTML = "preview.html"
 PREVIEW_TEXT = "preview.txt"
 
@@ -43,14 +45,13 @@ PREVIEW_TEXT = "preview.txt"
 # ---------------------------------------------------------------------------
 # Building the briefing
 # ---------------------------------------------------------------------------
-def pick_stories(stories, per_section=STORIES_PER_SECTION):
-    """The top stories per category, in curate's coverage order.
-
-    The fallback when Gemini is unavailable: no model, no project idea.
-    """
+def pick_stories(stories, per_section=None):
+    """The top of each section in incoming order: coverage for news, upvotes
+    for papers. The fallback when Gemini is unavailable (no project idea)."""
+    per_section = per_section or STORIES_PER_SECTION
     return {
-        category: [s for s in stories if s["category"] == category][:per_section]
-        for category in ("cyber", "ai")
+        category: [s for s in stories if s["category"] == category][:limit]
+        for category, limit in per_section.items()
     }
 
 
@@ -67,14 +68,16 @@ def build(today=None):
     raw_hackathons = hackathons.fetch_hackathons()
     sent = state.load_sent()
 
-    stories = state.filter_unsent(curate.curate(data["news"], data["kev"]), sent)
+    curated = curate.curate(data["news"], data["kev"]) + curate.curate_papers(data["papers"])
+    stories = state.filter_unsent(curated, sent)
     # Gemini picks if it can; otherwise coverage ranking. Never raises.
     picks = editor.edit(stories) or pick_stories(stories)
     chosen_hackathons = hackathons.select(raw_hackathons, sent, today)
 
     briefing = {
-        "cyber": picks["cyber"],
-        "ai": picks["ai"],
+        "cyber": picks.get("cyber", []),
+        "ai": picks.get("ai", []),
+        "papers": picks.get("papers", []),
         "project": picks.get("project"),
         "edited": "model" in picks,
         "model": picks.get("model", ""),
@@ -87,7 +90,7 @@ def build(today=None):
     # Only what is actually shown gets marked as sent. A story that didn't
     # make the cut today can still show up tomorrow.
     keys = set()
-    for story in picks["cyber"] + picks["ai"]:
+    for story in briefing["cyber"] + briefing["ai"] + briefing["papers"]:
         keys |= state.story_keys(story)
     for h in chosen_hackathons["nearby"] + chosen_hackathons["online"]:
         keys |= hackathons.hackathon_keys(h)

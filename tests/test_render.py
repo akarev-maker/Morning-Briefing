@@ -64,9 +64,21 @@ def _briefing(**kw):
     return b
 
 
+def test_paper_renders_with_votes_discussion_and_code():
+    paper = _story("Continual learning at scale", "https://arxiv.org/abs/2611.00001",
+                   category="papers", sources=["Hugging Face Papers"], coverage=1, points=None,
+                   upvotes=92, comments="https://huggingface.co/papers/2611.00001",
+                   code="https://github.com/x/cl")
+    _, html, text = render.render(_briefing(papers=[paper]), TODAY)
+    assert "Research papers" in html and "92 upvotes" in html
+    assert "Discussion on Hugging Face" in html and ">Code<" in html
+    assert "Code: https://github.com/x/cl" in text
+
+
 def test_every_section_renders():
     _, html, text = render.render(_briefing(), TODAY)
-    for heading in ("Cybersecurity", "AI and machine learning", "Hackathons", "CTFs"):
+    for heading in ("Cybersecurity", "AI and machine learning", "Research papers", "Hackathons",
+                    "CTFs"):
         assert heading in html
         assert heading.upper() in text
     assert "Java4Shell RCE" in html and "Splice CTF" in html and "BostonHacks" in html
@@ -78,7 +90,7 @@ def test_every_section_renders():
 def test_empty_sections_show_one_quiet_line():
     _, html, text = render.render(
         _briefing(cyber=[], ai=[], hackathons={"nearby": [], "online": []}, ctf=[]), TODAY)
-    for line in ("No new security stories today.", "No new AI stories today.",
+    for line in ("No new security stories today.", "No new AI stories today.", render.NO_PAPERS,
                  "No new hackathons today.", "No CTFs found for the next three weeks."):
         assert line in html and line in text
 
