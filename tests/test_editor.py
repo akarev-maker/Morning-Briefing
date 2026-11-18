@@ -125,24 +125,26 @@ def test_prompt_lists_ids_and_facts():
 
 
 # --- calling the model ----------------------------------------------------------
-def test_edit_returns_picks_and_model(gemini):
-    gemini.answers = {"gemini-flash-latest": json.dumps(GOOD)}
+def test_edit_uses_first_model_when_it_works(gemini):
+    gemini.answers = {"gemini-4-hydrogen": json.dumps(GOOD)}
     picks = editor.edit(STORIES)
-    assert picks["model"] == "gemini-flash-latest"
+    assert picks["model"] == "gemini-4-hydrogen"
+    assert gemini.calls == ["gemini-4-hydrogen"]  # no fallback calls
     assert gemini.init_kwargs["timeout"] == editor.TIMEOUT_SECONDS
     assert gemini.init_kwargs["max_retries"] == 0
 
 
-def test_overloaded_model_falls_back_to_lite(gemini):
-    gemini.answers = {"gemini-flash-latest": RuntimeError("503 high demand"),
+def test_models_are_tried_in_order(gemini):
+    gemini.answers = {"gemini-4-hydrogen": RuntimeError("404 model retired"),
+                      "gemini-flash-latest": RuntimeError("503 high demand"),
                       "gemini-flash-lite-latest": json.dumps(GOOD)}
     assert editor.edit(STORIES)["model"] == "gemini-flash-lite-latest"
-    assert gemini.calls == ["gemini-flash-latest", "gemini-flash-lite-latest"]
+    assert gemini.calls == list(editor.MODELS)
 
 
-def test_bad_answer_also_falls_back_to_lite(gemini):
-    gemini.answers = {"gemini-flash-latest": "", "gemini-flash-lite-latest": json.dumps(GOOD)}
-    assert editor.edit(STORIES)["model"] == "gemini-flash-lite-latest"
+def test_bad_answer_also_falls_back(gemini):
+    gemini.answers = {"gemini-4-hydrogen": "not json", "gemini-flash-latest": json.dumps(GOOD)}
+    assert editor.edit(STORIES)["model"] == "gemini-flash-latest"
 
 
 def test_every_model_failing_returns_none(gemini):

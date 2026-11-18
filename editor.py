@@ -29,12 +29,15 @@ import fetcher
 logger = logging.getLogger("briefing.editor")
 
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/"
-# "-latest" aliases always point at the current model, so retired versions
-# never break the job. If the main model is overloaded (the 503s seen in
-# November), the smaller one is usually still up.
-MODELS = ("gemini-flash-latest", "gemini-flash-lite-latest")
+# Tried in order; all three are on the free tier.
+#  1. gemini-4-hydrogen: the newest free model (Nov 2026). A pinned name, so it
+#     will stop working when Google retires it; the next two cover that.
+#  2. gemini-flash-latest: an alias Google moves to each new Flash release.
+#  3. gemini-flash-lite-latest: smaller and usually still up when the others
+#     return 503 "high demand" (it answered on 2026-11-18 when Flash didn't).
+MODELS = ("gemini-4-hydrogen", "gemini-flash-latest", "gemini-flash-lite-latest")
 # Per attempt. One hung request once ran until GitHub killed the job at 10
-# minutes. The SDK's own retries are off, so the worst case is 2 x 90s.
+# minutes. The SDK's own retries are off, so the worst case is 3 x 90s.
 TIMEOUT_SECONDS = 90
 
 CANDIDATES_PER_SECTION = 25
