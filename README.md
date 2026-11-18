@@ -137,7 +137,7 @@ step that also fires on cancellation.
 | `editor.py` | Gemini prompt, response validation, model fallback |
 | `render.py` | HTML and plain-text email |
 | `tests/` | 92 pytest tests; every outside call is faked |
-| `.github/workflows/morning.yml` | Daily schedule at 12:00 UTC |
+| `.github/workflows/morning.yml` | Daily schedule at 11:23 UTC |
 | `.github/workflows/tests.yml` | Runs the tests on every push and pull request |
 
 ## Running it
@@ -168,8 +168,10 @@ Add these repository secrets under Settings, Secrets and variables, Actions:
 | `EMAIL_PASSWORD` | A Gmail [app password](https://myaccount.google.com/apppasswords) for that address (requires 2-Step Verification) |
 | `EMAIL_RECIPIENT` | Where the email goes |
 
-The workflow runs daily at 12:00 UTC (7 AM Eastern in winter, 8 AM in summer).
-GitHub delays scheduled runs when it is busy, sometimes by hours, so news is
+The workflow is scheduled daily at 11:23 UTC (6:23 AM Eastern in winter, 7:23
+AM in summer). The odd minute is deliberate: the top of the hour is when
+GitHub's scheduler is busiest. GitHub still delays scheduled runs when it is
+busy, sometimes by hours, so news is
 collected from a 36-hour window and the sent log prevents repeats. It can also
 be started from the Actions tab.
 
